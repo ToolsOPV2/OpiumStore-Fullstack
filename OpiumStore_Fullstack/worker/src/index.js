@@ -11,31 +11,35 @@ export default {
       const path = url.pathname;
 
       if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api"}, 200, env, request);
-      if (path === "/auth/discord/start" && request.method === "GET") return startDiscordAuth(env);
-      if (path === "/auth/discord/callback" && request.method === "GET") return discordCallback(request, env);
-      if (path === "/auth/exchange" && request.method === "POST") return exchangeLoginCode(request, env);
+      if (path === "/auth/discord/start" && request.method === "GET") return await startDiscordAuth(env);
+      if (path === "/auth/discord/callback" && request.method === "GET") return await discordCallback(request, env);
+      if (path === "/auth/exchange" && request.method === "POST") return await exchangeLoginCode(request, env);
 
       validateOrigin(request, env);
       const user = await requireUser(request, env);
 
       if (path === "/api/me" && request.method === "GET") return json({user: publicUser(user, env)}, 200, env, request);
-      if (path === "/api/logout" && request.method === "POST") return logout(request, user, env);
-      if (path === "/api/catalog" && request.method === "GET") return getCatalog(user, env, request);
-      if (path === "/api/wallet" && request.method === "GET") return getWallet(user, env, request);
-      if (path === "/api/generate" && request.method === "POST") return generateLine(request, user, env);
-      if (path === "/api/shop/purchase" && request.method === "POST") return purchaseProduct(request, user, env);
-      if (path === "/api/wheel/spin" && request.method === "POST") return spinWheel(request, user, env);
+      if (path === "/api/logout" && request.method === "POST") return await logout(request, user, env);
+      if (path === "/api/catalog" && request.method === "GET") return await getCatalog(user, env, request);
+      if (path === "/api/wallet" && request.method === "GET") return await getWallet(user, env, request);
+      if (path === "/api/generate" && request.method === "POST") return await generateLine(request, user, env);
+      if (path === "/api/shop/purchase" && request.method === "POST") return await purchaseProduct(request, user, env);
+      if (path === "/api/wheel/spin" && request.method === "POST") return await spinWheel(request, user, env);
 
       if (path.startsWith("/api/admin/")) {
         requireAdmin(user, env);
-        return handleAdmin(request, user, env, path);
+        return await handleAdmin(request, user, env, path);
       }
 
       return json({error:"Route introuvable."}, 404, env, request);
     } catch (error) {
-      const status = Number(error.status || 500);
-      if (status >= 500) console.error(error);
-      return json({error: status >= 500 ? "Erreur interne du serveur." : error.message, ...(error.extra || {})}, status, env, request);
+      const status = Number(error?.status || 500);
+      const message = error instanceof Error ? error.message : String(error || "Erreur inconnue");
+      if (status >= 500) console.error("Worker error:", error);
+      return json({
+        error: status >= 500 ? "Erreur interne du serveur." : message,
+        ...(error?.extra && typeof error.extra === "object" ? error.extra : {})
+      }, status, env, request);
     }
   }
 };
@@ -326,6 +330,7 @@ async function spinWheel(request, user, env) {
 
 async function handleAdmin(request, user, env, path) {
   if (path === "/api/admin/overview" && request.method === "GET") return adminOverview(request, env);
+  if (path === "/api/admin/history" && request.method === "GET") return adminHistory(request, env);
   if (path === "/api/admin/services" && request.method === "POST") return createService(request, env);
   if (path === "/api/admin/products" && request.method === "POST") return createProduct(request, env);
   if (path === "/api/admin/wheel" && request.method === "POST") return createWheelReward(request, env);
@@ -365,6 +370,30 @@ async function adminOverview(request, env) {
   const settingsRows = await env.DB.prepare("SELECT key,value FROM app_settings").all();
   const settings = Object.fromEntries(settingsRows.results.map(x => [x.key,x.value]));
   return json({services:services.results.map(x=>({...x,stock:Number(x.stock),enabled:!!x.enabled})),products:products.results.map(x=>({...x,stock:Number(x.stock),enabled:!!x.enabled})),wheel_rewards:wheel.results,users:users.results,settings},200,env,request);
+}
+
+async function adminHistory(request, env) {
+  const generations = await env.DB.prepare(`SELECT d.id,d.service_id,d.service_name,d.created_at,
+    u.discord_id,u.username,u.global_name AS display_name
+    FROM deliveries d JOIN users u ON u.id=d.user_id
+    ORDER BY d.created_at DESC LIMIT 250`).all();
+  const purchases = await env.DB.prepare(`SELECT p.id,p.product_id,p.product_name,p.price,p.created_at,
+    u.discord_id,u.username,u.global_name AS display_name
+    FROM purchases p JOIN users u ON u.id=p.user_id
+    ORDER BY p.created_at DESC LIMIT 250`).all();
+  const totals = await env.DB.prepare(`SELECT
+    (SELECT COUNT(*) FROM deliveries) AS generations,
+    (SELECT COUNT(*) FROM purchases) AS purchases,
+    (SELECT COALESCE(SUM(price),0) FROM purchases) AS points_spent`).first();
+  return json({
+    generations: generations.results.map(row => ({...row, created_at:Number(row.created_at)})),
+    purchases: purchases.results.map(row => ({...row, price:Number(row.price), created_at:Number(row.created_at)})),
+    totals: {
+      generations:Number(totals?.generations || 0),
+      purchases:Number(totals?.purchases || 0),
+      points_spent:Number(totals?.points_spent || 0)
+    }
+  }, 200, env, request);
 }
 
 async function createService(request, env) {
