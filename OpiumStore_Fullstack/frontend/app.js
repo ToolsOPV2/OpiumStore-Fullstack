@@ -335,7 +335,17 @@
     state.adminHistoryLoading = true;
     render();
     try {
-      state.adminHistory = await api("/api/admin/history");
+      const overview = await api("/api/admin/overview");
+      state.admin = overview;
+      state.adminHistory = overview.history || null;
+      if (!state.adminHistory) {
+        try {
+          state.adminHistory = await api("/api/admin/history");
+        } catch (fallbackError) {
+          if (fallbackError.status === 404) throw new Error("Le Worker n’est pas encore à jour. Remplace worker/src/index.js puis relance npm run deploy.");
+          throw fallbackError;
+        }
+      }
     } catch (error) {
       showToast(error.message, true);
       state.adminHistory = null;
@@ -379,6 +389,7 @@
       window.scrollTo({top:0, behavior:"smooth"});
       try {
         state.admin = await api("/api/admin/overview");
+        state.adminHistory = state.admin.history || null;
         render();
       } catch (error) {
         main.innerHTML = `<section class="page"><div class="empty"><b>Impossible de charger le panel admin.</b><br><span class="muted">${escapeHtml(error.message)}</span><br><br><button class="btn btn-primary" id="retryAdminBtn">Réessayer</button></div></section>`;
@@ -464,6 +475,7 @@
       await api(path, {method, body: body === undefined ? undefined : JSON.stringify(body)});
       showToast(success);
       state.admin = await api("/api/admin/overview");
+      state.adminHistory = state.admin.history || state.adminHistory;
       await refreshAll(false);
       render();
     } catch (error) { showToast(error.message, true); }
