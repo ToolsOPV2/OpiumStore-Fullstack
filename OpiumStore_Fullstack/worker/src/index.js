@@ -10,7 +10,7 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
-      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api"}, 200, env, request);
+      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"admin-history-v2"}, 200, env, request);
       if (path === "/auth/discord/start" && request.method === "GET") return await startDiscordAuth(env);
       if (path === "/auth/discord/callback" && request.method === "GET") return await discordCallback(request, env);
       if (path === "/auth/exchange" && request.method === "POST") return await exchangeLoginCode(request, env);
@@ -360,19 +360,7 @@ async function handleAdmin(request, user, env, path) {
   throw httpError(404, "Route admin introuvable.");
 }
 
-async function adminOverview(request, env) {
-  const services = await env.DB.prepare(`SELECT s.*,COUNT(i.id) AS stock FROM services s LEFT JOIN inventory_lines i ON i.service_id=s.id GROUP BY s.id ORDER BY s.created_at`).all();
-  const products = await env.DB.prepare(`SELECT p.*,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id GROUP BY p.id ORDER BY p.created_at`).all();
-  const wheel = await env.DB.prepare("SELECT * FROM wheel_rewards ORDER BY created_at").all();
-  const users = await env.DB.prepare(`SELECT u.discord_id,u.username,u.global_name AS display_name,u.points,u.total_earned,u.total_spent,
-    (SELECT COUNT(*) FROM deliveries d WHERE d.user_id=u.id) AS generations,
-    (SELECT COUNT(*) FROM purchases p WHERE p.user_id=u.id) AS purchases FROM users u ORDER BY u.created_at DESC LIMIT 200`).all();
-  const settingsRows = await env.DB.prepare("SELECT key,value FROM app_settings").all();
-  const settings = Object.fromEntries(settingsRows.results.map(x => [x.key,x.value]));
-  return json({services:services.results.map(x=>({...x,stock:Number(x.stock),enabled:!!x.enabled})),products:products.results.map(x=>({...x,stock:Number(x.stock),enabled:!!x.enabled})),wheel_rewards:wheel.results,users:users.results,settings},200,env,request);
-}
-
-async function adminHistory(request, env) {
+async function getAdminHistoryData(env) {
   const generations = await env.DB.prepare(`SELECT d.id,d.service_id,d.service_name,d.created_at,
     u.discord_id,u.username,u.global_name AS display_name
     FROM deliveries d JOIN users u ON u.id=d.user_id
@@ -385,7 +373,7 @@ async function adminHistory(request, env) {
     (SELECT COUNT(*) FROM deliveries) AS generations,
     (SELECT COUNT(*) FROM purchases) AS purchases,
     (SELECT COALESCE(SUM(price),0) FROM purchases) AS points_spent`).first();
-  return json({
+  return {
     generations: generations.results.map(row => ({...row, created_at:Number(row.created_at)})),
     purchases: purchases.results.map(row => ({...row, price:Number(row.price), created_at:Number(row.created_at)})),
     totals: {
@@ -393,7 +381,33 @@ async function adminHistory(request, env) {
       purchases:Number(totals?.purchases || 0),
       points_spent:Number(totals?.points_spent || 0)
     }
-  }, 200, env, request);
+  };
+}
+
+async function adminOverview(request, env) {
+  const [services, products, wheel, users, settingsRows, history] = await Promise.all([
+    env.DB.prepare(`SELECT s.*,COUNT(i.id) AS stock FROM services s LEFT JOIN inventory_lines i ON i.service_id=s.id GROUP BY s.id ORDER BY s.created_at`).all(),
+    env.DB.prepare(`SELECT p.*,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id GROUP BY p.id ORDER BY p.created_at`).all(),
+    env.DB.prepare("SELECT * FROM wheel_rewards ORDER BY created_at").all(),
+    env.DB.prepare(`SELECT u.discord_id,u.username,u.global_name AS display_name,u.points,u.total_earned,u.total_spent,
+      (SELECT COUNT(*) FROM deliveries d WHERE d.user_id=u.id) AS generations,
+      (SELECT COUNT(*) FROM purchases p WHERE p.user_id=u.id) AS purchases FROM users u ORDER BY u.created_at DESC LIMIT 200`).all(),
+    env.DB.prepare("SELECT key,value FROM app_settings").all(),
+    getAdminHistoryData(env)
+  ]);
+  const settings = Object.fromEntries(settingsRows.results.map(x => [x.key,x.value]));
+  return json({
+    services:services.results.map(x=>({...x,stock:Number(x.stock),enabled:!!x.enabled})),
+    products:products.results.map(x=>({...x,stock:Number(x.stock),enabled:!!x.enabled})),
+    wheel_rewards:wheel.results,
+    users:users.results,
+    settings,
+    history
+  },200,env,request);
+}
+
+async function adminHistory(request, env) {
+  return json(await getAdminHistoryData(env), 200, env, request);
 }
 
 async function createService(request, env) {
