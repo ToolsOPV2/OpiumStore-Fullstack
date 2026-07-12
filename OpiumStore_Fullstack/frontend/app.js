@@ -77,7 +77,18 @@
     const headers = new Headers(options.headers || {});
     if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
     if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
-    const response = await fetch(`${API_BASE}${path}`, {...options, headers});
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    let response;
+    try {
+      response = await fetch(`${API_BASE}${path}`, {...options, headers, signal: controller.signal});
+    } catch (error) {
+      if (error?.name === "AbortError") throw new Error("Le serveur met trop de temps à répondre. Réessaie dans quelques secondes.");
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
     const payload = await response.json().catch(() => ({}));
     if (response.status === 401) {
       localStorage.removeItem(TOKEN_KEY);
@@ -310,12 +321,27 @@
     else main.innerHTML = homePage();
   }
 
-  function go(page) {
+  async function go(page) {
     if (page === "admin" && !state.me?.is_admin) return;
     state.page = page;
     state.generatorResult = null;
     state.purchaseResult = null;
     closeMobileMenu();
+
+    if (page === "admin") {
+      state.admin = null;
+      render();
+      window.scrollTo({top:0, behavior:"smooth"});
+      try {
+        state.admin = await api("/api/admin/overview");
+        render();
+      } catch (error) {
+        main.innerHTML = `<section class="page"><div class="empty"><b>Impossible de charger le panel admin.</b><br><span class="muted">${escapeHtml(error.message)}</span><br><br><button class="btn btn-primary" id="retryAdminBtn">Réessayer</button></div></section>`;
+        showToast(error.message, true);
+      }
+      return;
+    }
+
     render();
     window.scrollTo({top:0, behavior:"smooth"});
   }
@@ -423,7 +449,8 @@
 
   document.addEventListener("click", async (event) => {
     const pageTarget = event.target.closest("[data-page]");
-    if (pageTarget) { event.preventDefault(); go(pageTarget.dataset.page); return; }
+    if (pageTarget) { event.preventDefault(); await go(pageTarget.dataset.page); return; }
+    if (event.target.id === "retryAdminBtn") { await go("admin"); return; }
     const copy = event.target.closest("[data-copy]");
     if (copy) { await copyText(copy.dataset.copy); return; }
     const generate = event.target.closest("[data-generate]");
