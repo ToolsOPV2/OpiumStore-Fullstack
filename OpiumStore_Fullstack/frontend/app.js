@@ -84,7 +84,7 @@
     const timeout = setTimeout(() => controller.abort(), 20000);
     let response;
     try {
-      response = await fetch(`${API_BASE}${path}`, {...options, headers, signal: controller.signal});
+      response = await fetch(`${API_BASE}${path}`, {cache:"no-store", ...options, headers, signal: controller.signal});
     } catch (error) {
       if (error?.name === "AbortError") throw new Error("Le serveur met trop de temps à répondre. Réessaie dans quelques secondes.");
       throw error;
@@ -167,7 +167,8 @@
     await loadBaseData();
     setUserChrome();
     if (state.me.is_admin && state.page === "admin") {
-      state.admin = await api("/api/admin/overview");
+      state.admin = await api(`/api/admin/overview?ts=${Date.now()}`);
+      state.adminHistory = state.admin.history || state.adminHistory;
     }
     if (renderAfter) render();
   }
@@ -269,7 +270,7 @@
   function adminPage() {
     if (!state.me?.is_admin) return `<div class="empty">Accès refusé.</div>`;
     if (!state.admin) return `<div class="empty">Chargement du panel admin…</div>`;
-    const tabs = [["services","Services"],["products","Boutique"],["wheel","Roue"],["users","Utilisateurs"],["history","Historique"],["settings","Réglages"]];
+    const tabs = [["services","Services"],["products","Boutique"],["wheel","Roue"],["users","Utilisateurs"],["timers","Timers utilisateurs"],["history","Historique"],["settings","Réglages"]];
     return `<section class="page"><div class="section-head"><div><span class="eyebrow">ADMINISTRATION</span><h2>Panel serveur</h2><p>Toutes les modifications s’appliquent immédiatement à tous les utilisateurs.</p></div></div><div class="admin-tabs">${tabs.map(([id,label]) => `<button class="admin-tab ${state.adminTab===id?"active":""}" data-admin-tab="${id}">${label}</button>`).join("")}</div>${adminTabContent()}</section>`;
   }
 
@@ -278,6 +279,7 @@
     if (state.adminTab === "products") return adminProducts();
     if (state.adminTab === "wheel") return adminWheel();
     if (state.adminTab === "users") return adminUsers();
+    if (state.adminTab === "timers") return adminTimers();
     if (state.adminTab === "history") return adminHistory();
     return adminSettings();
   }
@@ -302,7 +304,48 @@
 
   function adminUsers() {
     const users = state.admin.users || [];
-    return `<article class="admin-card"><div style="overflow:auto"><table class="user-table"><thead><tr><th>Discord</th><th>Points</th><th>Générations</th><th>Achats</th><th>Ajuster</th></tr></thead><tbody>${users.map(u => `<tr><td><b>${escapeHtml(u.display_name || u.username)}</b><br><small class="muted">${escapeHtml(u.discord_id)}</small></td><td>${formatNumber(u.points)}</td><td>${formatNumber(u.generations)}</td><td>${formatNumber(u.purchases)}</td><td><div class="toolbar"><input class="input" style="width:100px" type="number" id="user-points-${u.discord_id}" value="100"><button class="btn btn-green btn-small" data-user-points="${u.discord_id}">Appliquer</button></div></td></tr>`).join("")}</tbody></table></div></article>`;
+    const apiVersion = escapeHtml(state.admin.api_version || "version inconnue");
+    return `<div class="admin-list">
+      <article class="admin-card">
+        <h3>⏱ Temps de génération par utilisateur</h3>
+        <p class="muted">Par défaut : <b>15 minutes</b>. Le cooldown est enregistré avec l’ID Discord : une génération ne bloque jamais les autres utilisateurs. Il ne bloque que l’utilisateur concerné sur le service qu’il vient d’utiliser.</p>
+        <div class="form-grid">
+          <div class="field"><label>ID Discord</label><input id="directUserCooldownId" class="input" inputmode="numeric" placeholder="123456789012345678"></div>
+          <div class="field"><label>Temps de génération (minutes)</label><input id="directUserCooldownMinutes" class="input" type="number" min="0" max="525600" step="1" value="15"></div>
+        </div>
+        <div class="admin-actions"><button id="saveDirectUserCooldownBtn" class="btn btn-primary">Enregistrer pour cet utilisateur</button><span class="muted">API : ${apiVersion}</span></div>
+      </article>
+      ${users.length ? users.map(u => {
+        const seconds = Number.isFinite(Number(u.generation_cooldown_seconds)) ? Number(u.generation_cooldown_seconds) : 900;
+        const minutes = Math.max(0, seconds / 60);
+        return `<article class="admin-card">
+          <div class="section-head" style="margin-bottom:12px"><div><h3>${escapeHtml(u.display_name || u.username)}</h3><p class="muted">@${escapeHtml(u.username || "inconnu")} · ID ${escapeHtml(u.discord_id)}</p></div><span class="badge badge-green">${formatNumber(u.generations)} génération(s)</span></div>
+          <div class="form-grid">
+            <div class="field"><label>Points</label><div class="toolbar"><input class="input" type="number" id="user-points-${u.discord_id}" value="100"><button class="btn btn-green btn-small" data-user-points="${u.discord_id}">Ajuster</button></div></div>
+            <div class="field"><label>Temps gen pour cet utilisateur (minutes)</label><div class="toolbar"><input class="input" type="number" min="0" max="525600" step="1" id="user-gen-time-${u.discord_id}" value="${escapeHtml(minutes)}"><button class="btn btn-primary btn-small" data-user-gen-time="${u.discord_id}">Enregistrer</button></div></div>
+            <div class="field"><label>Achats boutique</label><input class="input" value="${formatNumber(u.purchases)}" disabled></div>
+            <div class="field"><label>Timer actif</label><button class="btn btn-secondary" data-open-user-timer="${u.discord_id}">Voir / réinitialiser</button></div>
+          </div>
+        </article>`;
+      }).join("") : `<article class="admin-card"><div class="empty">Aucun utilisateur enregistré.</div></article>`}
+    </div>`;
+  }
+
+  function timerRemainingAt(timestamp) {
+    return remaining(Math.max(0, Math.ceil((Number(timestamp || 0) - Date.now()) / 1000)));
+  }
+
+  function adminTimers() {
+    const services = state.admin.services || [];
+    const timers = state.admin.timers || {generator:[],wheel:[]};
+    const generatorTimers = timers.generator || [];
+    const wheelTimers = timers.wheel || [];
+    const serviceOptions = services.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.emoji)} ${escapeHtml(s.name)}</option>`).join("");
+    return `<div class="admin-list">
+      <article class="admin-card"><h3>⏱ Modifier le timer d’un utilisateur</h3><p class="muted">Entre directement son ID Discord. Mets <b>0 seconde</b> pour supprimer le cooldown immédiatement.</p><div class="form-grid"><div class="field"><label>ID Discord</label><input id="timerDiscordId" class="input" inputmode="numeric" placeholder="123456789012345678"></div><div class="field"><label>Type</label><select id="timerType" class="input"><option value="generator">Générateur</option><option value="wheel">Roue</option></select></div><div class="field"><label>Service du générateur</label><select id="timerService" class="input">${serviceOptions}</select></div><div class="field"><label>Temps restant (secondes)</label><input id="timerSeconds" class="input" type="number" min="0" max="31536000" value="0"></div></div><button id="applyUserTimerBtn" class="btn btn-primary" style="margin-top:13px">Appliquer le timer</button></article>
+      <article class="admin-card"><h3>⚡ Timers générateur actifs</h3><div style="overflow:auto"><table class="user-table"><thead><tr><th>Utilisateur</th><th>Service</th><th>Temps restant</th><th>Fin</th><th></th></tr></thead><tbody>${generatorTimers.length ? generatorTimers.map(x => `<tr><td><b>${escapeHtml(x.display_name || x.username)}</b><br><small class="muted">${escapeHtml(x.discord_id)}</small></td><td>${escapeHtml(x.service_name)}</td><td>${timerRemainingAt(x.next_allowed_at)}</td><td>${formatDate(x.next_allowed_at)}</td><td><button class="btn btn-red btn-small" data-reset-user-timer="1" data-timer-user="${escapeHtml(x.discord_id)}" data-timer-type="generator" data-timer-service="${escapeHtml(x.service_id)}">Réinitialiser</button></td></tr>`).join("") : `<tr><td colspan="5"><div class="empty">Aucun timer générateur actif.</div></td></tr>`}</tbody></table></div></article>
+      <article class="admin-card"><h3>🎲 Timers roue actifs</h3><div style="overflow:auto"><table class="user-table"><thead><tr><th>Utilisateur</th><th>Temps restant</th><th>Fin</th><th></th></tr></thead><tbody>${wheelTimers.length ? wheelTimers.map(x => `<tr><td><b>${escapeHtml(x.display_name || x.username)}</b><br><small class="muted">${escapeHtml(x.discord_id)}</small></td><td>${timerRemainingAt(x.next_allowed_at)}</td><td>${formatDate(x.next_allowed_at)}</td><td><button class="btn btn-red btn-small" data-reset-user-timer="1" data-timer-user="${escapeHtml(x.discord_id)}" data-timer-type="wheel">Réinitialiser</button></td></tr>`).join("") : `<tr><td colspan="4"><div class="empty">Aucun timer roue actif.</div></td></tr>`}</tbody></table></div></article>
+    </div>`;
   }
 
   function shortId(value) {
@@ -335,19 +378,13 @@
     state.adminHistoryLoading = true;
     render();
     try {
-      const overview = await api("/api/admin/overview");
+      // L’overview contient déjà l’historique sur la version V3.
+      const overview = await api(`/api/admin/overview?ts=${Date.now()}`);
       state.admin = overview;
-      state.adminHistory = overview.history || null;
-      if (!state.adminHistory) {
-        try {
-          state.adminHistory = await api("/api/admin/history");
-        } catch (fallbackError) {
-          if (fallbackError.status === 404) throw new Error("Le Worker n’est pas encore à jour. Remplace worker/src/index.js puis relance npm run deploy.");
-          throw fallbackError;
-        }
-      }
+      state.adminHistory = overview.history || await api(`/api/admin/history?ts=${Date.now()}`);
     } catch (error) {
-      showToast(error.message, true);
+      console.error("Historique admin:", error);
+      showToast(`Historique indisponible : ${error.message}`, true);
       state.adminHistory = null;
     } finally {
       state.adminHistoryLoading = false;
@@ -357,7 +394,7 @@
 
   function adminSettings() {
     const settings = state.admin.settings || {};
-    return `<article class="admin-card"><h3>Réglages globaux</h3><div class="form-grid"><div class="field"><label>Cooldown roue (secondes)</label><input id="settingWheelCooldown" class="input" type="number" min="0" value="${escapeHtml(settings.wheel_cooldown_seconds || 3600)}"></div><div class="field"><label>Points de départ</label><input id="settingStartPoints" class="input" type="number" min="0" value="${escapeHtml(settings.starting_points || 500)}"></div></div><button id="saveSettingsBtn" class="btn btn-primary" style="margin-top:13px">Enregistrer les réglages</button><p class="muted">Les points de départ s’appliquent uniquement aux futurs comptes.</p></article>`;
+    return `<article class="admin-card"><h3>Réglages globaux</h3><div class="form-grid"><div class="field"><label>Temps gen par défaut (minutes)</label><input id="settingDefaultGenCooldown" class="input" type="number" min="0" value="${escapeHtml(Number(settings.default_generation_cooldown_seconds || 900) / 60)}"></div><div class="field"><label>Cooldown roue (secondes)</label><input id="settingWheelCooldown" class="input" type="number" min="0" value="${escapeHtml(settings.wheel_cooldown_seconds || 3600)}"></div><div class="field"><label>Points de départ</label><input id="settingStartPoints" class="input" type="number" min="0" value="${escapeHtml(settings.starting_points || 500)}"></div></div><button id="saveSettingsBtn" class="btn btn-primary" style="margin-top:13px">Enregistrer les réglages</button><p class="muted">Le temps par défaut est de 15 minutes pour les utilisateurs sans réglage personnel. Les points de départ s’appliquent uniquement aux futurs comptes.</p></article>`;
   }
 
   function render() {
@@ -502,6 +539,22 @@
     }
     if (target.dataset.deleteWheel) return confirm("Supprimer ce gain ?") && adminRequest(`/api/admin/wheel/${target.dataset.deleteWheel}`, "DELETE", undefined, "Gain supprimé.");
     if (target.dataset.userPoints) return adminRequest(`/api/admin/users/${target.dataset.userPoints}/points`, "POST", {delta:Number($(`#user-points-${target.dataset.userPoints}`).value)}, "Points ajustés.");
+    if (target.dataset.userGenTime) {
+      const discordId = target.dataset.userGenTime;
+      const minutes = Number($(`#user-gen-time-${discordId}`).value);
+      if (!Number.isFinite(minutes) || minutes < 0) return showToast("Entre une durée valide en minutes.", true);
+      return adminRequest(`/api/admin/users/${encodeURIComponent(discordId)}/generation-cooldown`, "PUT", {minutes}, "Temps de génération enregistré.");
+    }
+  }
+
+  async function saveUserTimer({discordId, type, serviceId, seconds}) {
+    const cleanId = String(discordId || "").trim();
+    if (!/^\d{5,30}$/.test(cleanId)) return showToast("Entre un ID Discord valide.", true);
+    await adminRequest(`/api/admin/users/${encodeURIComponent(cleanId)}/timer`, "PUT", {
+      type,
+      service_id:type === "generator" ? serviceId : undefined,
+      seconds:Number(seconds)
+    }, Number(seconds) === 0 ? "Timer réinitialisé." : "Timer utilisateur modifié.");
   }
 
   document.addEventListener("click", async (event) => {
@@ -522,8 +575,33 @@
       return;
     }
     if (event.target.id === "refreshHistoryBtn") { await loadAdminHistory(true); return; }
-    const adminAction = event.target.closest("[data-save-service],[data-restock-service],[data-clear-service],[data-delete-service],[data-toggle-service],[data-save-product],[data-restock-product],[data-clear-product],[data-delete-product],[data-toggle-product],[data-save-wheel],[data-delete-wheel],[data-user-points]");
+    const openTimer = event.target.closest("[data-open-user-timer]");
+    if (openTimer) {
+      state.adminTab = "timers";
+      render();
+      const input = $("#timerDiscordId");
+      if (input) input.value = openTimer.dataset.openUserTimer;
+      return;
+    }
+    if (event.target.id === "saveDirectUserCooldownBtn") {
+      const discordId = String($("#directUserCooldownId")?.value || "").trim();
+      const minutes = Number($("#directUserCooldownMinutes")?.value);
+      if (!/^\d{5,30}$/.test(discordId)) { showToast("Entre un ID Discord valide.", true); return; }
+      if (!Number.isFinite(minutes) || minutes < 0) { showToast("Entre une durée valide en minutes.", true); return; }
+      await adminRequest(`/api/admin/users/${encodeURIComponent(discordId)}/generation-cooldown`, "PUT", {minutes}, "Temps de génération enregistré pour cet utilisateur.");
+      return;
+    }
+    const resetTimer = event.target.closest("[data-reset-user-timer]");
+    if (resetTimer) {
+      await saveUserTimer({discordId:resetTimer.dataset.timerUser,type:resetTimer.dataset.timerType,serviceId:resetTimer.dataset.timerService || "",seconds:0});
+      return;
+    }
+    const adminAction = event.target.closest("[data-save-service],[data-restock-service],[data-clear-service],[data-delete-service],[data-toggle-service],[data-save-product],[data-restock-product],[data-clear-product],[data-delete-product],[data-toggle-product],[data-save-wheel],[data-delete-wheel],[data-user-points],[data-user-gen-time]");
     if (adminAction) { await handleAdminAction(adminAction); return; }
+    if (event.target.id === "applyUserTimerBtn") {
+      await saveUserTimer({discordId:$("#timerDiscordId").value,type:$("#timerType").value,serviceId:$("#timerService").value,seconds:$("#timerSeconds").value});
+      return;
+    }
     if (event.target.id === "spinBtn") { await handleSpin(); return; }
     if (event.target.id === "addServiceBtn") {
       await adminRequest("/api/admin/services", "POST", {name:$("#newSvcName").value,emoji:$("#newSvcEmoji").value,description:$("#newSvcDesc").value,cooldown_seconds:Number($("#newSvcCooldown").value)}, "Service ajouté."); return;
@@ -535,7 +613,7 @@
       await adminRequest("/api/admin/wheel", "POST", {emoji:$("#newWheelEmoji").value,label:$("#newWheelLabel").value,points:Number($("#newWheelPoints").value),weight:Number($("#newWheelWeight").value)}, "Gain ajouté."); return;
     }
     if (event.target.id === "saveSettingsBtn") {
-      await adminRequest("/api/admin/settings", "PUT", {wheel_cooldown_seconds:Number($("#settingWheelCooldown").value),starting_points:Number($("#settingStartPoints").value)}, "Réglages enregistrés."); return;
+      await adminRequest("/api/admin/settings", "PUT", {default_generation_cooldown_minutes:Number($("#settingDefaultGenCooldown").value),wheel_cooldown_seconds:Number($("#settingWheelCooldown").value),starting_points:Number($("#settingStartPoints").value)}, "Réglages enregistrés."); return;
     }
   });
 

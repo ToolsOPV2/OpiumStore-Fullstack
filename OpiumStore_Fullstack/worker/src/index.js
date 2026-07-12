@@ -10,7 +10,7 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
-      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"admin-history-v2"}, 200, env, request);
+      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"admin-user-cooldown-v5"}, 200, env, request);
       if (path === "/auth/discord/start" && request.method === "GET") return await startDiscordAuth(env);
       if (path === "/auth/discord/callback" && request.method === "GET") return await discordCallback(request, env);
       if (path === "/auth/exchange" && request.method === "POST") return await exchangeLoginCode(request, env);
@@ -236,7 +236,7 @@ async function setting(env, key, fallback) {
 async function getCatalog(user, env, request) {
   const now = Date.now();
   const services = await env.DB.prepare(`SELECT s.id,s.name,s.emoji,s.description,s.cooldown_seconds,s.enabled,COUNT(i.id) AS stock,MAX(0,COALESCE(c.next_allowed_at,0)-?) AS cooldown_ms
-    FROM services s LEFT JOIN inventory_lines i ON i.service_id=s.id LEFT JOIN generator_cooldowns c ON c.service_id=s.id AND c.user_id=?
+    FROM services s LEFT JOIN inventory_lines i ON i.service_id=s.id LEFT JOIN generator_cooldowns c ON c.user_id=? AND c.service_id=s.id
     WHERE s.enabled=1 GROUP BY s.id ORDER BY s.created_at`).bind(now,user.id).all();
   const products = await env.DB.prepare(`SELECT p.id,p.name,p.emoji,p.description,p.price,p.enabled,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id WHERE p.enabled=1 GROUP BY p.id ORDER BY p.created_at`).all();
   const wheel = await env.DB.prepare("SELECT id,emoji,label,points,weight FROM wheel_rewards ORDER BY created_at").all();
@@ -263,14 +263,26 @@ async function getWallet(user, env, request) {
   return json({items:items.slice(0,150)}, 200, env, request);
 }
 
-async function acquireGeneratorCooldown(userId, service, env) {
-  const now = Date.now(), next = now + Number(service.cooldown_seconds) * 1000;
+async function getUserGenerationCooldownSeconds(user, env) {
+  const key = `user_generation_cooldown:${user.discord_id}`;
+  const defaultRaw = Number(await setting(env, "default_generation_cooldown_seconds", "900"));
+  const safeDefault = Number.isFinite(defaultRaw) ? Math.max(0, Math.min(31536000, Math.trunc(defaultRaw))) : 900;
+  const raw = Number(await setting(env, key, String(safeDefault)));
+  if (!Number.isFinite(raw)) return safeDefault;
+  return Math.max(0, Math.min(31536000, Math.trunc(raw)));
+}
+
+async function acquireGeneratorCooldown(user, service, env) {
+  const now = Date.now();
+  const cooldownSeconds = await getUserGenerationCooldownSeconds(user, env);
+  const next = now + cooldownSeconds * 1000;
   const lock = await env.DB.prepare(`INSERT INTO generator_cooldowns(user_id,service_id,next_allowed_at) VALUES(?,?,?)
     ON CONFLICT(user_id,service_id) DO UPDATE SET next_allowed_at=excluded.next_allowed_at
-    WHERE generator_cooldowns.next_allowed_at<=? RETURNING next_allowed_at`).bind(userId,service.id,next,now).first();
+    WHERE generator_cooldowns.next_allowed_at<=? RETURNING next_allowed_at`).bind(user.id,service.id,next,now).first();
   if (!lock) {
-    const row = await env.DB.prepare("SELECT next_allowed_at FROM generator_cooldowns WHERE user_id=? AND service_id=?").bind(userId,service.id).first();
-    throw httpError(429, `Cooldown actif : ${Math.ceil((Number(row.next_allowed_at)-now)/1000)} seconde(s).`, {retry_after:Math.ceil((Number(row.next_allowed_at)-now)/1000)});
+    const row = await env.DB.prepare("SELECT next_allowed_at FROM generator_cooldowns WHERE user_id=? AND service_id=?").bind(user.id,service.id).first();
+    const retryAfter = Math.max(0, Math.ceil((Number(row?.next_allowed_at || now)-now)/1000));
+    throw httpError(429, `Cooldown actif : ${retryAfter} seconde(s).`, {retry_after:retryAfter});
   }
   return next;
 }
@@ -279,7 +291,7 @@ async function generateLine(request, user, env) {
   const {service_id} = await parseJson(request);
   const service = await env.DB.prepare("SELECT * FROM services WHERE id=? AND enabled=1").bind(service_id).first();
   if (!service) throw httpError(404, "Service indisponible.");
-  const nextAllowed = await acquireGeneratorCooldown(user.id, service, env);
+  const nextAllowed = await acquireGeneratorCooldown(user, service, env);
   const line = await env.DB.prepare(`DELETE FROM inventory_lines WHERE id=(SELECT id FROM inventory_lines WHERE service_id=? ORDER BY id LIMIT 1) RETURNING id,cipher_text,iv`).bind(service.id).first();
   if (!line) {
     await env.DB.prepare("UPDATE generator_cooldowns SET next_allowed_at=0 WHERE user_id=? AND service_id=?").bind(user.id,service.id).run();
@@ -357,6 +369,10 @@ async function handleAdmin(request, user, env, path) {
   if (match && request.method === "DELETE") return deleteWheelReward(request, env, match[1]);
   match = path.match(/^\/api\/admin\/users\/([^/]+)\/points$/);
   if (match && request.method === "POST") return adjustPoints(request, env, match[1]);
+  match = path.match(/^\/api\/admin\/users\/([^/]+)\/generation-cooldown$/);
+  if (match && (request.method === "PUT" || request.method === "POST")) return setUserGenerationCooldown(request, env, decodeURIComponent(match[1]));
+  match = path.match(/^\/api\/admin\/users\/([^/]+)\/timer$/);
+  if (match && (request.method === "PUT" || request.method === "POST")) return setUserTimer(request, env, decodeURIComponent(match[1]));
   throw httpError(404, "Route admin introuvable.");
 }
 
@@ -384,25 +400,55 @@ async function getAdminHistoryData(env) {
   };
 }
 
+async function getAdminTimersData(env) {
+  const now = Date.now();
+  const generator = await env.DB.prepare(`SELECT u.discord_id,u.username,u.global_name AS display_name,
+    gc.service_id,s.name AS service_name,gc.next_allowed_at
+    FROM generator_cooldowns gc
+    JOIN users u ON u.id=gc.user_id
+    JOIN services s ON s.id=gc.service_id
+    WHERE gc.next_allowed_at>?
+    ORDER BY gc.next_allowed_at DESC LIMIT 500`).bind(now).all();
+  const wheel = await env.DB.prepare(`SELECT u.discord_id,u.username,u.global_name AS display_name,wc.next_allowed_at
+    FROM wheel_cooldowns wc
+    JOIN users u ON u.id=wc.user_id
+    WHERE wc.next_allowed_at>?
+    ORDER BY wc.next_allowed_at DESC LIMIT 500`).bind(now).all();
+  return {
+    generator: generator.results.map(row => ({...row,next_allowed_at:Number(row.next_allowed_at)})),
+    wheel: wheel.results.map(row => ({...row,next_allowed_at:Number(row.next_allowed_at)}))
+  };
+}
+
 async function adminOverview(request, env) {
-  const [services, products, wheel, users, settingsRows, history] = await Promise.all([
-    env.DB.prepare(`SELECT s.*,COUNT(i.id) AS stock FROM services s LEFT JOIN inventory_lines i ON i.service_id=s.id GROUP BY s.id ORDER BY s.created_at`).all(),
-    env.DB.prepare(`SELECT p.*,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id GROUP BY p.id ORDER BY p.created_at`).all(),
-    env.DB.prepare("SELECT * FROM wheel_rewards ORDER BY created_at").all(),
-    env.DB.prepare(`SELECT u.discord_id,u.username,u.global_name AS display_name,u.points,u.total_earned,u.total_spent,
-      (SELECT COUNT(*) FROM deliveries d WHERE d.user_id=u.id) AS generations,
-      (SELECT COUNT(*) FROM purchases p WHERE p.user_id=u.id) AS purchases FROM users u ORDER BY u.created_at DESC LIMIT 200`).all(),
-    env.DB.prepare("SELECT key,value FROM app_settings").all(),
-    getAdminHistoryData(env)
-  ]);
+  // Requêtes séquentielles : plus stables avec D1 que plusieurs lectures concurrentes.
+  const services = await env.DB.prepare(`SELECT s.*,COUNT(i.id) AS stock FROM services s LEFT JOIN inventory_lines i ON i.service_id=s.id GROUP BY s.id ORDER BY s.created_at`).all();
+  const products = await env.DB.prepare(`SELECT p.*,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id GROUP BY p.id ORDER BY p.created_at`).all();
+  const wheel = await env.DB.prepare("SELECT * FROM wheel_rewards ORDER BY created_at").all();
+  const users = await env.DB.prepare(`SELECT u.discord_id,u.username,u.global_name AS display_name,u.points,u.total_earned,u.total_spent,
+    COALESCE(
+      CAST(gen_setting.value AS INTEGER),
+      CAST((SELECT value FROM app_settings WHERE key='default_generation_cooldown_seconds') AS INTEGER),
+      900
+    ) AS generation_cooldown_seconds,
+    (SELECT COUNT(*) FROM deliveries d WHERE d.user_id=u.id) AS generations,
+    (SELECT COUNT(*) FROM purchases p WHERE p.user_id=u.id) AS purchases
+    FROM users u
+    LEFT JOIN app_settings gen_setting ON gen_setting.key=('user_generation_cooldown:' || u.discord_id)
+    ORDER BY u.created_at DESC LIMIT 200`).all();
+  const settingsRows = await env.DB.prepare("SELECT key,value FROM app_settings").all();
+  const history = await getAdminHistoryData(env);
+  const timers = await getAdminTimersData(env);
   const settings = Object.fromEntries(settingsRows.results.map(x => [x.key,x.value]));
   return json({
-    services:services.results.map(x=>({...x,stock:Number(x.stock),enabled:!!x.enabled})),
-    products:products.results.map(x=>({...x,stock:Number(x.stock),enabled:!!x.enabled})),
-    wheel_rewards:wheel.results,
-    users:users.results,
+    api_version:"admin-user-cooldown-v5",
+    services:services.results.map(x=>({...x,stock:Number(x.stock),cooldown_seconds:Number(x.cooldown_seconds),enabled:!!x.enabled})),
+    products:products.results.map(x=>({...x,stock:Number(x.stock),price:Number(x.price),enabled:!!x.enabled})),
+    wheel_rewards:wheel.results.map(x=>({...x,points:Number(x.points),weight:Number(x.weight)})),
+    users:users.results.map(x=>({...x,points:Number(x.points),total_earned:Number(x.total_earned),total_spent:Number(x.total_spent),generations:Number(x.generations),purchases:Number(x.purchases),generation_cooldown_seconds:Number(x.generation_cooldown_seconds || 900)})),
     settings,
-    history
+    history,
+    timers
   },200,env,request);
 }
 
@@ -471,7 +517,69 @@ async function createWheelReward(request,env){const b=await parseJson(request),n
 async function updateWheelReward(request,env,id){const b=await parseJson(request),r=await env.DB.prepare("SELECT * FROM wheel_rewards WHERE id=?").bind(id).first();if(!r)throw httpError(404,"Gain introuvable.");await env.DB.prepare("UPDATE wheel_rewards SET emoji=?,label=?,points=?,weight=?,updated_at=? WHERE id=?").bind(String(b.emoji??r.emoji).slice(0,16),String(b.label??r.label).slice(0,80),Math.max(0,Number(b.points??r.points)),Math.max(1,Number(b.weight??r.weight)),Date.now(),id).run();return json({ok:true},200,env,request)}
 async function deleteWheelReward(request,env,id){const count=await env.DB.prepare("SELECT COUNT(*) AS n FROM wheel_rewards").first();if(Number(count.n)<=2)throw httpError(409,"Conserve au moins deux gains.");await env.DB.prepare("DELETE FROM wheel_rewards WHERE id=?").bind(id).run();return json({ok:true},200,env,request)}
 
-async function updateSettings(request,env){const b=await parseJson(request);const values={wheel_cooldown_seconds:Math.max(0,Number(b.wheel_cooldown_seconds||0)),starting_points:Math.max(0,Number(b.starting_points||0))};await env.DB.batch(Object.entries(values).map(([k,v])=>env.DB.prepare("INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(k,String(v))));return json({ok:true},200,env,request)}
+async function updateSettings(request,env){
+  const b=await parseJson(request);
+  const defaultMinutes=Number(b.default_generation_cooldown_minutes ?? 15);
+  if(!Number.isFinite(defaultMinutes)||defaultMinutes<0||defaultMinutes>525600)throw httpError(400,"Temps gen par défaut invalide.");
+  const values={
+    default_generation_cooldown_seconds:Math.round(defaultMinutes*60),
+    wheel_cooldown_seconds:Math.max(0,Number(b.wheel_cooldown_seconds||0)),
+    starting_points:Math.max(0,Number(b.starting_points||0))
+  };
+  await env.DB.batch(Object.entries(values).map(([k,v])=>env.DB.prepare("INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").bind(k,String(v))));
+  return json({ok:true},200,env,request)
+}
 
 async function adjustPoints(request,env,discordId){const {delta}=await parseJson(request),amount=Math.trunc(Number(delta));if(!Number.isFinite(amount)||Math.abs(amount)>1000000)throw httpError(400,"Ajustement invalide.");const row=await env.DB.prepare("UPDATE users SET points=MAX(0,points+?),total_earned=total_earned+CASE WHEN ?>0 THEN ? ELSE 0 END,total_spent=total_spent+CASE WHEN ?<0 THEN ABS(?) ELSE 0 END,updated_at=? WHERE discord_id=? RETURNING points").bind(amount,amount,amount,amount,amount,Date.now(),discordId).first();if(!row)throw httpError(404,"Utilisateur introuvable.");return json({ok:true,points:Number(row.points)},200,env,request)}
+
+async function setUserGenerationCooldown(request, env, discordId) {
+  const cleanId = String(discordId || "").trim();
+  if (!/^\d{5,30}$/.test(cleanId)) throw httpError(400, "ID Discord invalide.");
+  const user = await env.DB.prepare("SELECT id FROM users WHERE discord_id=?").bind(cleanId).first();
+  if (!user) throw httpError(404, "Utilisateur introuvable. Il doit s’être connecté au site au moins une fois.");
+  const body = await parseJson(request);
+  const minutes = Number(body.minutes);
+  if (!Number.isFinite(minutes) || minutes < 0 || minutes > 525600) throw httpError(400, "Durée invalide (0 à 525 600 minutes).");
+  const seconds = Math.round(minutes * 60);
+  const key = `user_generation_cooldown:${cleanId}`;
+  await env.DB.prepare(`INSERT INTO app_settings(key,value) VALUES(?,?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(key,String(seconds)).run();
+  return json({ok:true,discord_id:cleanId,minutes:seconds/60,seconds},200,env,request);
+}
+
+async function setUserTimer(request, env, discordId) {
+  const cleanId = String(discordId || "").trim();
+  if (!/^\d{5,30}$/.test(cleanId)) throw httpError(400, "ID Discord invalide.");
+  const body = await parseJson(request);
+  const type = String(body.type || "generator");
+  const seconds = Math.trunc(Number(body.seconds));
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 31536000) throw httpError(400, "Durée invalide (0 à 31 536 000 secondes).");
+  const user = await env.DB.prepare("SELECT id,discord_id,username,global_name FROM users WHERE discord_id=?").bind(cleanId).first();
+  if (!user) throw httpError(404, "Utilisateur introuvable. Il doit s’être connecté au site au moins une fois.");
+  const now = Date.now();
+  const nextAllowedAt = seconds === 0 ? 0 : now + seconds * 1000;
+
+  if (type === "wheel") {
+    if (seconds === 0) {
+      await env.DB.prepare("DELETE FROM wheel_cooldowns WHERE user_id=?").bind(user.id).run();
+    } else {
+      await env.DB.prepare(`INSERT INTO wheel_cooldowns(user_id,next_allowed_at) VALUES(?,?)
+        ON CONFLICT(user_id) DO UPDATE SET next_allowed_at=excluded.next_allowed_at`).bind(user.id,nextAllowedAt).run();
+    }
+    return json({ok:true,type:"wheel",discord_id:cleanId,seconds,next_allowed_at:nextAllowedAt},200,env,request);
+  }
+
+  if (type !== "generator") throw httpError(400, "Type de timer invalide.");
+  const serviceId = String(body.service_id || "").trim();
+  if (!serviceId) throw httpError(400, "Choisis un service.");
+  const service = await env.DB.prepare("SELECT id,name FROM services WHERE id=?").bind(serviceId).first();
+  if (!service) throw httpError(404, "Service introuvable.");
+  if (seconds === 0) {
+    await env.DB.prepare("DELETE FROM generator_cooldowns WHERE user_id=? AND service_id=?").bind(user.id,serviceId).run();
+  } else {
+    await env.DB.prepare(`INSERT INTO generator_cooldowns(user_id,service_id,next_allowed_at) VALUES(?,?,?)
+      ON CONFLICT(user_id,service_id) DO UPDATE SET next_allowed_at=excluded.next_allowed_at`).bind(user.id,serviceId,nextAllowedAt).run();
+  }
+  return json({ok:true,type:"generator",discord_id:cleanId,service_id:serviceId,service_name:service.name,seconds,next_allowed_at:nextAllowedAt},200,env,request);
+}
 
