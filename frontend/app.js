@@ -304,7 +304,7 @@
 
   function adminUsers() {
     const users = state.admin.users || [];
-    return `<article class="admin-card"><div style="overflow:auto"><table class="user-table"><thead><tr><th>Discord</th><th>Points</th><th>Générations</th><th>Achats</th><th>Ajuster</th><th>Timer</th></tr></thead><tbody>${users.map(u => `<tr><td><b>${escapeHtml(u.display_name || u.username)}</b><br><small class="muted">${escapeHtml(u.discord_id)}</small></td><td>${formatNumber(u.points)}</td><td>${formatNumber(u.generations)}</td><td>${formatNumber(u.purchases)}</td><td><div class="toolbar"><input class="input" style="width:100px" type="number" id="user-points-${u.discord_id}" value="100"><button class="btn btn-green btn-small" data-user-points="${u.discord_id}">Appliquer</button></div></td><td><button class="btn btn-secondary btn-small" data-open-user-timer="${u.discord_id}">Modifier</button></td></tr>`).join("")}</tbody></table></div></article>`;
+    return `<article class="admin-card"><p class="muted">Le temps de génération est propre à chaque utilisateur. Par défaut : <b>15 minutes</b>. Mets 0 pour désactiver le cooldown.</p><div style="overflow:auto"><table class="user-table"><thead><tr><th>Discord</th><th>Points</th><th>Générations</th><th>Achats</th><th>Ajuster</th><th>Temps gen</th><th>Timer actif</th></tr></thead><tbody>${users.map(u => { const minutes = Math.max(0, Number(u.generation_cooldown_seconds ?? 900) / 60); return `<tr><td><b>${escapeHtml(u.display_name || u.username)}</b><br><small class="muted">${escapeHtml(u.discord_id)}</small></td><td>${formatNumber(u.points)}</td><td>${formatNumber(u.generations)}</td><td>${formatNumber(u.purchases)}</td><td><div class="toolbar"><input class="input" style="width:100px" type="number" id="user-points-${u.discord_id}" value="100"><button class="btn btn-green btn-small" data-user-points="${u.discord_id}">Appliquer</button></div></td><td><div class="toolbar"><input class="input" style="width:90px" type="number" min="0" max="525600" step="1" id="user-gen-time-${u.discord_id}" value="${escapeHtml(minutes)}"><span class="muted">min</span><button class="btn btn-primary btn-small" data-user-gen-time="${u.discord_id}">Enregistrer</button></div></td><td><button class="btn btn-secondary btn-small" data-open-user-timer="${u.discord_id}">Modifier</button></td></tr>`; }).join("")}</tbody></table></div></article>`;
   }
 
   function timerRemainingAt(timestamp) {
@@ -515,6 +515,12 @@
     }
     if (target.dataset.deleteWheel) return confirm("Supprimer ce gain ?") && adminRequest(`/api/admin/wheel/${target.dataset.deleteWheel}`, "DELETE", undefined, "Gain supprimé.");
     if (target.dataset.userPoints) return adminRequest(`/api/admin/users/${target.dataset.userPoints}/points`, "POST", {delta:Number($(`#user-points-${target.dataset.userPoints}`).value)}, "Points ajustés.");
+    if (target.dataset.userGenTime) {
+      const discordId = target.dataset.userGenTime;
+      const minutes = Number($(`#user-gen-time-${discordId}`).value);
+      if (!Number.isFinite(minutes) || minutes < 0) return showToast("Entre une durée valide en minutes.", true);
+      return adminRequest(`/api/admin/users/${encodeURIComponent(discordId)}/generation-cooldown`, "PUT", {minutes}, "Temps de génération enregistré.");
+    }
   }
 
   async function saveUserTimer({discordId, type, serviceId, seconds}) {
@@ -558,7 +564,7 @@
       await saveUserTimer({discordId:resetTimer.dataset.timerUser,type:resetTimer.dataset.timerType,serviceId:resetTimer.dataset.timerService || "",seconds:0});
       return;
     }
-    const adminAction = event.target.closest("[data-save-service],[data-restock-service],[data-clear-service],[data-delete-service],[data-toggle-service],[data-save-product],[data-restock-product],[data-clear-product],[data-delete-product],[data-toggle-product],[data-save-wheel],[data-delete-wheel],[data-user-points]");
+    const adminAction = event.target.closest("[data-save-service],[data-restock-service],[data-clear-service],[data-delete-service],[data-toggle-service],[data-save-product],[data-restock-product],[data-clear-product],[data-delete-product],[data-toggle-product],[data-save-wheel],[data-delete-wheel],[data-user-points],[data-user-gen-time]");
     if (adminAction) { await handleAdminAction(adminAction); return; }
     if (event.target.id === "applyUserTimerBtn") {
       await saveUserTimer({discordId:$("#timerDiscordId").value,type:$("#timerType").value,serviceId:$("#timerService").value,seconds:$("#timerSeconds").value});
