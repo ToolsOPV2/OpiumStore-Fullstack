@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#030712">
+  <meta name="color-scheme" content="dark">
+  <title>OpiumStore Hub</title>
+  <meta name="description" content="OpiumStore Hub — connexion Discord, générateur FIFO, boutique à points et panel admin.">
+  <link rel="icon" href="assets/logo.png" type="image/png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="boot" class="boot-screen">
+    <img src="assets/logo.png" alt="OpiumStore" class="boot-logo">
+    <div class="spinner"></div>
+    <p>Chargement sécurisé…</p>
+  </div>
+
+  <section id="loginView" class="login-view hidden">
+    <div class="login-glow glow-one"></div>
+    <div class="login-glow glow-two"></div>
+    <article class="login-card glass">
+      <img src="assets/logo.png" alt="Logo OpiumStore" class="login-logo">
+      <span class="eyebrow">OPIUMSTORE HUB</span>
+      <h1>Ton espace membre, rapide et sécurisé.</h1>
+      <p>Connecte-toi avec Discord pour accéder au générateur, à la boutique à points, à ton Wallet et aux récompenses.</p>
+      <button id="discordLoginBtn" class="btn btn-discord btn-lg">⌁ Se connecter avec Discord</button>
+      <p class="login-note">Le mot de passe Discord n’est jamais transmis au site.</p>
+    </article>
+  </section>
+
+  <div id="app" class="app hidden">
+    <div id="mobileOverlay" class="mobile-overlay"></div>
+    <aside id="sidebar" class="sidebar">
+      <button class="brand" data-page="home">
+        <img src="assets/logo.png" alt="OpiumStore">
+        <span><b>OPIUMSTORE</b><small>Hub sécurisé</small></span>
+      </button>
+
+      <div class="user-card glass">
+        <img id="sidebarAvatar" alt="Avatar Discord" class="avatar">
+        <div class="user-card-copy">
+          <strong id="sidebarName">Utilisateur</strong>
+          <span id="sidebarRole" class="role-chip">Membre</span>
+          <small id="sidebarDiscord">Discord</small>
+        </div>
+      </div>
+
+      <nav id="sideNav" class="side-nav">
+        <button class="nav-item active" data-page="home"><span>⌂</span>Accueil</button>
+        <button class="nav-item" data-page="generator"><span>⚡</span>Générateur</button>
+        <button class="nav-item" data-page="shop"><span>🎁</span>Boutique points</button>
+        <button class="nav-item" data-page="wheel"><span>🎡</span>Roue</button>
+        <button class="nav-item" data-page="wallet"><span>▰</span>Wallet</button>
+        <a id="autoshopLink" class="nav-item" href="#" target="_blank" rel="noopener"><span>🛍</span>AutoShop ↗</a>
+        <button id="adminNav" class="nav-item hidden" data-page="admin"><span>🛡</span>Administration</button>
+      </nav>
+
+      <button id="logoutBtn" class="logout-btn">↪ Déconnexion</button>
+    </aside>
+
+    <section class="shell">
+      <header class="topbar">
+        <button id="menuBtn" class="icon-btn mobile-only" aria-label="Ouvrir le menu">☰</button>
+        <div>
+          <span class="eyebrow">OPIUMSTORE HUB</span>
+          <h2 id="pageTitle">Accueil</h2>
+        </div>
+        <div class="topbar-actions">
+          <div class="points-pill"><span>◈</span><b id="topPoints">0</b><small>pts</small></div>
+          <button id="refreshBtn" class="icon-btn" aria-label="Actualiser">↻</button>
+          <img id="topAvatar" alt="Avatar Discord" class="top-avatar">
+        </div>
+      </header>
+
+      <main id="main" class="main"></main>
+    </section>
+  </div>
+
+  <div id="toast" class="toast" role="status"></div>
+  <div id="modal" class="modal-wrap hidden" aria-hidden="true">
+    <div class="modal-card glass">
+      <button id="modalClose" class="modal-close">×</button>
+      <div id="modalContent"></div>
+    </div>
+  </div>
+
+  <script src="config.js?v=20260712-5"></script>
+  <script src="app.js?v=20260712-5" defer></script>
+</body>
+</html>
