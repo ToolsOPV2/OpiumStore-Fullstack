@@ -1,0 +1,13 @@
+name = "opiumstore-api"
+main = "src/index.js"
+compatibility_date = "2026-07-12"
+
+[vars]
+FRONTEND_ORIGIN = "https://opiumstore-hub.onrender.com"
+DISCORD_REDIRECT_URI = "https://opiumstore-api.opiumstore.workers.dev/auth/discord/callback"
+ADMIN_DISCORD_IDS = "1456328839062880409"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "opiumstore-db"
+database_id = "1ccf6b9b-d1ab-40a1-81d6-6d2c9dfd4b59"
