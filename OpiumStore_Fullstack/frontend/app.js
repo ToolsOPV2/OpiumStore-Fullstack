@@ -4,6 +4,7 @@
   const config = window.OPIUM_CONFIG || {};
   const API_BASE = String(config.API_BASE || "").replace(/\/$/, "");
   const AUTOSHOP_URL = config.AUTOSHOP_URL || "https://opiumshop.onrender.com/";
+  const DISCORD_URL = config.DISCORD_URL || config.SUPPORT_URL || "";
   const TOKEN_KEY = "opium_store_session";
 
   const state = {
@@ -209,19 +210,74 @@
 
   function serviceCard(s) {
     const wait = Number(s.cooldown_remaining || 0);
+    const dailyRemaining = Number(state.catalog?.daily_generation_remaining);
+    const dailyBlocked = Number.isFinite(dailyRemaining) && dailyRemaining === 0;
+    const disabled = s.stock <= 0 || wait || dailyBlocked;
+    const buttonLabel = s.stock <= 0 ? "Stock épuisé" : dailyBlocked ? "Limite journalière atteinte" : wait ? `Cooldown ${remaining(wait)}` : "Générer";
     return `<article class="card service-card">
       <div class="service-top"><div class="emoji-box">${escapeHtml(s.emoji)}</div><span class="badge ${s.stock > 0 ? "badge-green" : "badge-red"}">${formatNumber(s.stock)} en stock</span></div>
       <div><h3>${escapeHtml(s.name)}</h3><p class="muted">${escapeHtml(s.description || "Distribution automatique dans l’ordre du stock.")}</p></div>
-      <div class="${wait ? "cooldown" : "stock"}">${wait ? `Disponible dans ${remaining(wait)}` : "Disponible maintenant"}</div>
-      <button class="btn btn-primary" data-generate="${escapeHtml(s.id)}" ${s.stock <= 0 || wait ? "disabled" : ""}>${s.stock <= 0 ? "Stock épuisé" : wait ? `Cooldown ${remaining(wait)}` : "Générer"}</button>
+      <div class="${wait ? "cooldown" : "stock"}">${wait ? `Disponible dans ${remaining(wait)}` : dailyBlocked ? "Quota journalier utilisé" : "Disponible maintenant"}</div>
+      <button class="btn btn-primary" data-generate="${escapeHtml(s.id)}" ${disabled ? "disabled" : ""}>${buttonLabel}</button>
     </article>`;
   }
 
   function generatorPage() {
+    const limit = Number(state.catalog?.daily_generation_limit ?? 6);
+    const used = Number(state.catalog?.generations_today || 0);
+    const remainingToday = Number(state.catalog?.daily_generation_remaining);
+    const quotaText = limit === 0
+      ? `Illimité · ${formatNumber(used)} génération(s) aujourd’hui`
+      : `${formatNumber(used)} / ${formatNumber(limit)} aujourd’hui · ${formatNumber(Math.max(0, Number.isFinite(remainingToday) ? remainingToday : limit - used))} restante(s)`;
     return `<section class="page">
-      <div class="section-head"><div><span class="eyebrow">DISTRIBUTION FIFO</span><h2>Générateur</h2><p>La première demande reçoit la première ligne du stock, puis la suivante reçoit la ligne 2.</p></div></div>
+      <div class="section-head"><div><span class="eyebrow">DISTRIBUTION FIFO</span><h2>Générateur</h2><p>La première demande reçoit la première ligne du stock, puis la suivante reçoit la ligne 2.</p></div><span class="badge badge-green">${quotaText}</span></div>
       ${state.generatorResult ? `<div class="line-result"><b>Ta ligne vient d’être livrée :</b><div class="secret-line">${escapeHtml(state.generatorResult.value)}</div><div class="toolbar"><button class="btn btn-green" data-copy="${escapeHtml(state.generatorResult.value)}">Copier</button><button class="btn btn-secondary" data-page="wallet">Voir le Wallet</button></div></div>` : ""}
       <div class="section grid grid-3">${(state.catalog?.services || []).map(serviceCard).join("") || '<div class="empty">Aucun service activé.</div>'}</div>
+    </section>`;
+  }
+
+  function vipPage() {
+    const supportButton = DISCORD_URL
+      ? `<a class="btn btn-primary" href="${escapeHtml(DISCORD_URL)}" target="_blank" rel="noopener">Ouvrir un ticket</a>`
+      : `<button class="btn btn-primary" data-support-link>Ouvrir un ticket</button>`;
+    const discordButton = DISCORD_URL
+      ? `<a class="btn btn-secondary" href="${escapeHtml(DISCORD_URL)}" target="_blank" rel="noopener">Se connecter avec Discord</a>`
+      : `<button class="btn btn-secondary" data-support-link>Se connecter avec Discord</button>`;
+    return `<section class="page">
+      <div class="section-head"><div><span class="eyebrow">OFFRES OPIUMGEN</span><h2>Choisis ton accès</h2><p>Commence gratuitement, profite des avantages Boost ou passe VIP à vie.</p></div></div>
+
+      <div class="grid grid-3">
+        <article class="card" style="display:flex;flex-direction:column;gap:16px">
+          <div><div class="emoji-box">🆓</div><span class="eyebrow">GRATUIT</span><h2>Accès gratuit</h2><div class="stat-value">0€ <small>/ jour</small></div><p class="muted">Pour utiliser le générateur gratuitement avec une limite simple.</p></div>
+          <div class="admin-list"><div>✅ 6 générations par jour</div><div>⏱️ Cooldown de 15 minutes</div><div>🎁 Accès aux services publics</div><div>📦 Stocks selon disponibilité</div></div>
+          <button class="btn btn-green" data-page="generator" style="margin-top:auto">Commencer gratuitement</button>
+        </article>
+
+        <article class="card" style="display:flex;flex-direction:column;gap:16px;border:1px solid rgba(59,130,246,.55);box-shadow:0 0 32px rgba(37,99,235,.13)">
+          <div><div class="emoji-box">🚀</div><span class="eyebrow">BOOST</span><h2>Accès Boost</h2><div class="stat-value">Boost Discord</div><p class="muted">Pour les membres qui boostent le serveur et veulent plus de générations.</p></div>
+          <div class="admin-list"><div>✅ 15 générations par jour</div><div>⏱️ Cooldown de 2 minutes</div><div>🚀 Avantage membre boost</div><div>📦 Plus de confort d’utilisation</div></div>
+          <div style="margin-top:auto">${discordButton}</div>
+        </article>
+
+        <article class="card" style="display:flex;flex-direction:column;gap:16px;border:1px solid rgba(168,85,247,.65);box-shadow:0 0 38px rgba(168,85,247,.18)">
+          <div><div class="emoji-box">👑</div><span class="eyebrow">VIP</span><h2>VIP à vie</h2><div class="stat-value">6,99 € <small>à vie</small></div><p class="muted">L’offre premium pour profiter au maximum du générateur OpiumGen.</p></div>
+          <div class="admin-list"><div>♾️ Générations illimitées par jour</div><div>⏱️ Cooldown réduit à 1 minute</div><div>👑 Accès aux services VIP uniquement</div><div>🚀 Accès premium</div><div>🛠️ Support plus rapide</div></div>
+          <a class="btn btn-primary" href="${escapeHtml(AUTOSHOP_URL)}" target="_blank" rel="noopener" style="margin-top:auto">Devenir VIP</a>
+        </article>
+      </div>
+
+      <section class="section">
+        <div class="section-head"><div><span class="eyebrow">SUPPORT</span><h2>Besoin d’aide ?</h2></div></div>
+        <div class="grid grid-2">
+          <article class="card"><div class="emoji-box">🎫</div><h3>Ticket Discord</h3><p class="muted">Support rapide</p><p>En cas de problème avec une génération, ouvre un ticket sur le Discord. Pense à indiquer ton pseudo, le service et l’heure de génération.</p>${supportButton}</article>
+          <article class="card"><div class="emoji-box">🛠️</div><h3>Aide</h3><p class="muted">Avant de contacter</p><div class="admin-list"><div>Vérifie ton stock et ton cooldown.</div><div>Vérifie si le service est en maintenance.</div><div>Ajoute une capture du message d’erreur.</div></div></article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><div><span class="eyebrow">RÈGLEMENT</span><h2>Utilisation responsable</h2></div></div>
+        <article class="card"><div class="admin-list"><div>✅ Utilise uniquement des ressources, codes ou licences que tu as le droit de distribuer.</div><div>🚫 Le partage d’accès volés, piratés ou obtenus illégalement est interdit.</div><div>🛠️ Certains services peuvent être mis en maintenance temporairement.</div><div>📩 En cas de problème, contacte le support du serveur Discord.</div></div></article>
+      </section>
     </section>`;
   }
 
@@ -307,22 +363,32 @@
     const apiVersion = escapeHtml(state.admin.api_version || "version inconnue");
     return `<div class="admin-list">
       <article class="admin-card">
-        <h3>⏱ Temps de génération par utilisateur</h3>
-        <p class="muted">Par défaut : <b>15 minutes</b>. Le cooldown est enregistré avec l’ID Discord : une génération ne bloque jamais les autres utilisateurs. Il ne bloque que l’utilisateur concerné sur le service qu’il vient d’utiliser.</p>
+        <h3>⚙️ Limites par utilisateur</h3>
+        <p class="muted">Réglages par défaut : <b>15 minutes</b> entre deux générations et <b>6 générations par jour</b>. Le cooldown et la limite sont liés à l’ID Discord, sans bloquer les autres utilisateurs. Mets <b>0 génération/jour</b> pour un accès illimité.</p>
         <div class="form-grid">
           <div class="field"><label>ID Discord</label><input id="directUserCooldownId" class="input" inputmode="numeric" placeholder="123456789012345678"></div>
           <div class="field"><label>Temps de génération (minutes)</label><input id="directUserCooldownMinutes" class="input" type="number" min="0" max="525600" step="1" value="15"></div>
+          <div class="field"><label>Générations par jour</label><input id="directUserDailyLimit" class="input" type="number" min="0" max="100000" step="1" value="6"></div>
         </div>
-        <div class="admin-actions"><button id="saveDirectUserCooldownBtn" class="btn btn-primary">Enregistrer pour cet utilisateur</button><span class="muted">API : ${apiVersion}</span></div>
+        <div class="admin-actions">
+          <button id="saveDirectUserCooldownBtn" class="btn btn-primary">Enregistrer le temps</button>
+          <button id="saveDirectUserDailyLimitBtn" class="btn btn-green">Enregistrer la limite/jour</button>
+          <span class="muted">API : ${apiVersion}</span>
+        </div>
       </article>
       ${users.length ? users.map(u => {
         const seconds = Number.isFinite(Number(u.generation_cooldown_seconds)) ? Number(u.generation_cooldown_seconds) : 900;
         const minutes = Math.max(0, seconds / 60);
+        const dailyLimit = Number.isFinite(Number(u.daily_generation_limit)) ? Math.max(0, Number(u.daily_generation_limit)) : 6;
+        const today = Math.max(0, Number(u.generations_today || 0));
+        const quotaLabel = dailyLimit === 0 ? `${formatNumber(today)} aujourd’hui · illimité` : `${formatNumber(today)} / ${formatNumber(dailyLimit)} aujourd’hui`;
         return `<article class="admin-card">
-          <div class="section-head" style="margin-bottom:12px"><div><h3>${escapeHtml(u.display_name || u.username)}</h3><p class="muted">@${escapeHtml(u.username || "inconnu")} · ID ${escapeHtml(u.discord_id)}</p></div><span class="badge badge-green">${formatNumber(u.generations)} génération(s)</span></div>
+          <div class="section-head" style="margin-bottom:12px"><div><h3>${escapeHtml(u.display_name || u.username)}</h3><p class="muted">@${escapeHtml(u.username || "inconnu")} · ID ${escapeHtml(u.discord_id)}</p></div><span class="badge badge-green">${quotaLabel}</span></div>
           <div class="form-grid">
             <div class="field"><label>Points</label><div class="toolbar"><input class="input" type="number" id="user-points-${u.discord_id}" value="100"><button class="btn btn-green btn-small" data-user-points="${u.discord_id}">Ajuster</button></div></div>
-            <div class="field"><label>Temps gen pour cet utilisateur (minutes)</label><div class="toolbar"><input class="input" type="number" min="0" max="525600" step="1" id="user-gen-time-${u.discord_id}" value="${escapeHtml(minutes)}"><button class="btn btn-primary btn-small" data-user-gen-time="${u.discord_id}">Enregistrer</button></div></div>
+            <div class="field"><label>Temps gen (minutes)</label><div class="toolbar"><input class="input" type="number" min="0" max="525600" step="1" id="user-gen-time-${u.discord_id}" value="${escapeHtml(minutes)}"><button class="btn btn-primary btn-small" data-user-gen-time="${u.discord_id}">Enregistrer</button></div></div>
+            <div class="field"><label>Générations par jour (0 = illimité)</label><div class="toolbar"><input class="input" type="number" min="0" max="100000" step="1" id="user-daily-limit-${u.discord_id}" value="${escapeHtml(dailyLimit)}"><button class="btn btn-primary btn-small" data-user-daily-limit="${u.discord_id}">Enregistrer</button></div></div>
+            <div class="field"><label>Générations totales</label><input class="input" value="${formatNumber(u.generations)}" disabled></div>
             <div class="field"><label>Achats boutique</label><input class="input" value="${formatNumber(u.purchases)}" disabled></div>
             <div class="field"><label>Timer actif</label><button class="btn btn-secondary" data-open-user-timer="${u.discord_id}">Voir / réinitialiser</button></div>
           </div>
@@ -394,16 +460,17 @@
 
   function adminSettings() {
     const settings = state.admin.settings || {};
-    return `<article class="admin-card"><h3>Réglages globaux</h3><div class="form-grid"><div class="field"><label>Temps gen par défaut (minutes)</label><input id="settingDefaultGenCooldown" class="input" type="number" min="0" value="${escapeHtml(Number(settings.default_generation_cooldown_seconds || 900) / 60)}"></div><div class="field"><label>Cooldown roue (secondes)</label><input id="settingWheelCooldown" class="input" type="number" min="0" value="${escapeHtml(settings.wheel_cooldown_seconds || 3600)}"></div><div class="field"><label>Points de départ</label><input id="settingStartPoints" class="input" type="number" min="0" value="${escapeHtml(settings.starting_points || 500)}"></div></div><button id="saveSettingsBtn" class="btn btn-primary" style="margin-top:13px">Enregistrer les réglages</button><p class="muted">Le temps par défaut est de 15 minutes pour les utilisateurs sans réglage personnel. Les points de départ s’appliquent uniquement aux futurs comptes.</p></article>`;
+    return `<article class="admin-card"><h3>Réglages globaux</h3><div class="form-grid"><div class="field"><label>Temps gen par défaut (minutes)</label><input id="settingDefaultGenCooldown" class="input" type="number" min="0" value="${escapeHtml(Number(settings.default_generation_cooldown_seconds || 900) / 60)}"></div><div class="field"><label>Générations/jour par défaut</label><input id="settingDefaultDailyLimit" class="input" type="number" min="0" max="100000" value="${escapeHtml(settings.default_daily_generation_limit ?? 6)}"></div><div class="field"><label>Cooldown roue (secondes)</label><input id="settingWheelCooldown" class="input" type="number" min="0" value="${escapeHtml(settings.wheel_cooldown_seconds || 3600)}"></div><div class="field"><label>Points de départ</label><input id="settingStartPoints" class="input" type="number" min="0" value="${escapeHtml(settings.starting_points || 500)}"></div></div><button id="saveSettingsBtn" class="btn btn-primary" style="margin-top:13px">Enregistrer les réglages</button><p class="muted">Valeurs par défaut : 15 minutes et 6 générations par jour. Mets 0 génération/jour pour une limite globale illimitée. Les réglages personnels des utilisateurs restent prioritaires.</p></article>`;
   }
 
   function render() {
     if (!state.me || !state.catalog) return;
     setUserChrome();
     $$("[data-page]").forEach(el => el.classList.toggle("active", el.dataset.page === state.page));
-    const titles = {home:"Accueil",generator:"Générateur",shop:"Boutique points",wheel:"Roue",wallet:"Wallet",admin:"Administration"};
+    const titles = {home:"Accueil",generator:"Générateur",vip:"VIP & offres",shop:"Boutique points",wheel:"Roue",wallet:"Wallet",admin:"Administration"};
     $("#pageTitle").textContent = titles[state.page] || "OpiumStore Hub";
     if (state.page === "generator") main.innerHTML = generatorPage();
+    else if (state.page === "vip") main.innerHTML = vipPage();
     else if (state.page === "shop") main.innerHTML = shopPage();
     else if (state.page === "wheel") main.innerHTML = wheelPage();
     else if (state.page === "wallet") main.innerHTML = walletPage();
@@ -545,6 +612,12 @@
       if (!Number.isFinite(minutes) || minutes < 0) return showToast("Entre une durée valide en minutes.", true);
       return adminRequest(`/api/admin/users/${encodeURIComponent(discordId)}/generation-cooldown`, "PUT", {minutes}, "Temps de génération enregistré.");
     }
+    if (target.dataset.userDailyLimit) {
+      const discordId = target.dataset.userDailyLimit;
+      const limit = Number($(`#user-daily-limit-${discordId}`).value);
+      if (!Number.isInteger(limit) || limit < 0 || limit > 100000) return showToast("Entre une limite entière entre 0 et 100 000.", true);
+      return adminRequest(`/api/admin/users/${encodeURIComponent(discordId)}/generation-limit`, "PUT", {limit}, "Limite journalière enregistrée.");
+    }
   }
 
   async function saveUserTimer({discordId, type, serviceId, seconds}) {
@@ -591,12 +664,25 @@
       await adminRequest(`/api/admin/users/${encodeURIComponent(discordId)}/generation-cooldown`, "PUT", {minutes}, "Temps de génération enregistré pour cet utilisateur.");
       return;
     }
+    if (event.target.id === "saveDirectUserDailyLimitBtn") {
+      const discordId = String($("#directUserCooldownId")?.value || "").trim();
+      const limit = Number($("#directUserDailyLimit")?.value);
+      if (!/^\d{5,30}$/.test(discordId)) { showToast("Entre un ID Discord valide.", true); return; }
+      if (!Number.isInteger(limit) || limit < 0 || limit > 100000) { showToast("Entre une limite entière entre 0 et 100 000.", true); return; }
+      await adminRequest(`/api/admin/users/${encodeURIComponent(discordId)}/generation-limit`, "PUT", {limit}, "Limite journalière enregistrée pour cet utilisateur.");
+      return;
+    }
+    const supportLink = event.target.closest("[data-support-link]");
+    if (supportLink) {
+      showToast("Ajoute DISCORD_URL dans frontend/config.js pour ouvrir ton serveur Discord.", true);
+      return;
+    }
     const resetTimer = event.target.closest("[data-reset-user-timer]");
     if (resetTimer) {
       await saveUserTimer({discordId:resetTimer.dataset.timerUser,type:resetTimer.dataset.timerType,serviceId:resetTimer.dataset.timerService || "",seconds:0});
       return;
     }
-    const adminAction = event.target.closest("[data-save-service],[data-restock-service],[data-clear-service],[data-delete-service],[data-toggle-service],[data-save-product],[data-restock-product],[data-clear-product],[data-delete-product],[data-toggle-product],[data-save-wheel],[data-delete-wheel],[data-user-points],[data-user-gen-time]");
+    const adminAction = event.target.closest("[data-save-service],[data-restock-service],[data-clear-service],[data-delete-service],[data-toggle-service],[data-save-product],[data-restock-product],[data-clear-product],[data-delete-product],[data-toggle-product],[data-save-wheel],[data-delete-wheel],[data-user-points],[data-user-gen-time],[data-user-daily-limit]");
     if (adminAction) { await handleAdminAction(adminAction); return; }
     if (event.target.id === "applyUserTimerBtn") {
       await saveUserTimer({discordId:$("#timerDiscordId").value,type:$("#timerType").value,serviceId:$("#timerService").value,seconds:$("#timerSeconds").value});
@@ -613,7 +699,7 @@
       await adminRequest("/api/admin/wheel", "POST", {emoji:$("#newWheelEmoji").value,label:$("#newWheelLabel").value,points:Number($("#newWheelPoints").value),weight:Number($("#newWheelWeight").value)}, "Gain ajouté."); return;
     }
     if (event.target.id === "saveSettingsBtn") {
-      await adminRequest("/api/admin/settings", "PUT", {default_generation_cooldown_minutes:Number($("#settingDefaultGenCooldown").value),wheel_cooldown_seconds:Number($("#settingWheelCooldown").value),starting_points:Number($("#settingStartPoints").value)}, "Réglages enregistrés."); return;
+      await adminRequest("/api/admin/settings", "PUT", {default_generation_cooldown_minutes:Number($("#settingDefaultGenCooldown").value),default_daily_generation_limit:Number($("#settingDefaultDailyLimit").value),wheel_cooldown_seconds:Number($("#settingWheelCooldown").value),starting_points:Number($("#settingStartPoints").value)}, "Réglages enregistrés."); return;
     }
   });
 

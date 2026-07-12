@@ -10,7 +10,7 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
-      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"admin-user-cooldown-v5"}, 200, env, request);
+      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"vip-daily-limits-v6"}, 200, env, request);
       if (path === "/auth/discord/start" && request.method === "GET") return await startDiscordAuth(env);
       if (path === "/auth/discord/callback" && request.method === "GET") return await discordCallback(request, env);
       if (path === "/auth/exchange" && request.method === "POST") return await exchangeLoginCode(request, env);
@@ -244,12 +244,20 @@ async function getCatalog(user, env, request) {
   const summary = await env.DB.prepare(`SELECT
     (SELECT COUNT(*) FROM deliveries WHERE user_id=?) AS generations,
     (SELECT COUNT(*) FROM purchases WHERE user_id=?) AS purchases`).bind(user.id,user.id).first();
+  const dayKey = brusselsDayKey(now);
+  const dailyGenerationLimit = await getUserDailyGenerationLimit(user, env);
+  const generationsToday = await getDailyGenerationUsage(user, env, dayKey);
+  const dailyGenerationRemaining = dailyGenerationLimit === 0 ? -1 : Math.max(0,dailyGenerationLimit-generationsToday);
   return json({
     services:services.results.map(s => ({...s,stock:Number(s.stock),cooldown_remaining:Math.ceil(Number(s.cooldown_ms)/1000)})),
     products:products.results.map(p => ({...p,stock:Number(p.stock),price:Number(p.price)})),
     wheel_rewards:wheel.results.map(r => ({...r,points:Number(r.points),weight:Number(r.weight)})),
     wheel_cooldown_remaining:Math.ceil(Math.max(0,Number(wheelCooldown?.next_allowed_at || 0)-now)/1000),
-    summary
+    daily_generation_limit:dailyGenerationLimit,
+    generations_today:generationsToday,
+    daily_generation_remaining:dailyGenerationRemaining,
+    daily_reset_timezone:"Europe/Brussels",
+    summary:{generations:Number(summary?.generations || 0),purchases:Number(summary?.purchases || 0)}
   }, 200, env, request);
 }
 
@@ -272,6 +280,67 @@ async function getUserGenerationCooldownSeconds(user, env) {
   return Math.max(0, Math.min(31536000, Math.trunc(raw)));
 }
 
+
+function brusselsDayKey(timestamp = Date.now()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone:"Europe/Brussels",
+    year:"numeric",
+    month:"2-digit",
+    day:"2-digit"
+  }).formatToParts(new Date(timestamp));
+  const values = Object.fromEntries(parts.filter(p => p.type !== "literal").map(p => [p.type,p.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+async function getUserDailyGenerationLimit(user, env) {
+  const key = `user_daily_generation_limit:${user.discord_id}`;
+  const defaultRaw = Number(await setting(env, "default_daily_generation_limit", "6"));
+  const safeDefault = Number.isInteger(defaultRaw) ? Math.max(0, Math.min(100000, defaultRaw)) : 6;
+  const raw = Number(await setting(env, key, String(safeDefault)));
+  if (!Number.isInteger(raw)) return safeDefault;
+  return Math.max(0, Math.min(100000, raw));
+}
+
+async function getDailyGenerationUsage(user, env, dayKey = brusselsDayKey()) {
+  const row = await env.DB.prepare("SELECT used FROM daily_generation_usage WHERE user_id=? AND day_key=?").bind(user.id,dayKey).first();
+  return Math.max(0, Number(row?.used || 0));
+}
+
+async function reserveDailyGeneration(user, env) {
+  const now = Date.now();
+  const dayKey = brusselsDayKey(now);
+  const limit = await getUserDailyGenerationLimit(user, env);
+  let row;
+  if (limit === 0) {
+    row = await env.DB.prepare(`INSERT INTO daily_generation_usage(user_id,day_key,used,updated_at)
+      VALUES(?,?,1,?)
+      ON CONFLICT(user_id,day_key) DO UPDATE SET used=daily_generation_usage.used+1,updated_at=excluded.updated_at
+      RETURNING used`).bind(user.id,dayKey,now).first();
+  } else {
+    row = await env.DB.prepare(`INSERT INTO daily_generation_usage(user_id,day_key,used,updated_at)
+      VALUES(?,?,1,?)
+      ON CONFLICT(user_id,day_key) DO UPDATE SET used=daily_generation_usage.used+1,updated_at=excluded.updated_at
+      WHERE daily_generation_usage.used<?
+      RETURNING used`).bind(user.id,dayKey,now,limit).first();
+  }
+  if (!row) {
+    const used = await getDailyGenerationUsage(user, env, dayKey);
+    throw httpError(429, `Limite journalière atteinte : ${used}/${limit} génération(s).`, {
+      daily_limit:limit,
+      generations_today:used,
+      day_key:dayKey
+    });
+  }
+  return {dayKey,limit,used:Number(row.used),reserved:true};
+}
+
+async function releaseDailyGeneration(user, env, quota) {
+  if (!quota?.reserved) return;
+  await env.DB.prepare(`UPDATE daily_generation_usage
+    SET used=MAX(0,used-1),updated_at=?
+    WHERE user_id=? AND day_key=?`).bind(Date.now(),user.id,quota.dayKey).run();
+}
+
 async function acquireGeneratorCooldown(user, service, env) {
   const now = Date.now();
   const cooldownSeconds = await getUserGenerationCooldownSeconds(user, env);
@@ -291,15 +360,32 @@ async function generateLine(request, user, env) {
   const {service_id} = await parseJson(request);
   const service = await env.DB.prepare("SELECT * FROM services WHERE id=? AND enabled=1").bind(service_id).first();
   if (!service) throw httpError(404, "Service indisponible.");
-  const nextAllowed = await acquireGeneratorCooldown(user, service, env);
+
+  const quota = await reserveDailyGeneration(user, env);
+  let nextAllowed;
+  try {
+    nextAllowed = await acquireGeneratorCooldown(user, service, env);
+  } catch (error) {
+    await releaseDailyGeneration(user, env, quota);
+    throw error;
+  }
+
   const line = await env.DB.prepare(`DELETE FROM inventory_lines WHERE id=(SELECT id FROM inventory_lines WHERE service_id=? ORDER BY id LIMIT 1) RETURNING id,cipher_text,iv`).bind(service.id).first();
   if (!line) {
     await env.DB.prepare("UPDATE generator_cooldowns SET next_allowed_at=0 WHERE user_id=? AND service_id=?").bind(user.id,service.id).run();
+    await releaseDailyGeneration(user, env, quota);
     throw httpError(409, "Stock épuisé.");
   }
+
   const id = crypto.randomUUID(), now = Date.now();
   await env.DB.prepare("INSERT INTO deliveries(id,user_id,service_id,service_name,cipher_text,iv,created_at) VALUES(?,?,?,?,?,?,?)").bind(id,user.id,service.id,service.name,line.cipher_text,line.iv,now).run();
-  return json({delivery:{id,title:service.name,value:await decryptText(line.cipher_text,line.iv,env),created_at:now},next_allowed_at:nextAllowed}, 200, env, request);
+  return json({
+    delivery:{id,title:service.name,value:await decryptText(line.cipher_text,line.iv,env),created_at:now},
+    next_allowed_at:nextAllowed,
+    daily_generation_limit:quota.limit,
+    generations_today:quota.used,
+    daily_generation_remaining:quota.limit === 0 ? -1 : Math.max(0,quota.limit-quota.used)
+  }, 200, env, request);
 }
 
 async function purchaseProduct(request, user, env) {
@@ -371,6 +457,8 @@ async function handleAdmin(request, user, env, path) {
   if (match && request.method === "POST") return adjustPoints(request, env, match[1]);
   match = path.match(/^\/api\/admin\/users\/([^/]+)\/generation-cooldown$/);
   if (match && (request.method === "PUT" || request.method === "POST")) return setUserGenerationCooldown(request, env, decodeURIComponent(match[1]));
+  match = path.match(/^\/api\/admin\/users\/([^/]+)\/generation-limit$/);
+  if (match && (request.method === "PUT" || request.method === "POST")) return setUserDailyGenerationLimit(request, env, decodeURIComponent(match[1]));
   match = path.match(/^\/api\/admin\/users\/([^/]+)\/timer$/);
   if (match && (request.method === "PUT" || request.method === "POST")) return setUserTimer(request, env, decodeURIComponent(match[1]));
   throw httpError(404, "Route admin introuvable.");
@@ -425,30 +513,49 @@ async function adminOverview(request, env) {
   const services = await env.DB.prepare(`SELECT s.*,COUNT(i.id) AS stock FROM services s LEFT JOIN inventory_lines i ON i.service_id=s.id GROUP BY s.id ORDER BY s.created_at`).all();
   const products = await env.DB.prepare(`SELECT p.*,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id GROUP BY p.id ORDER BY p.created_at`).all();
   const wheel = await env.DB.prepare("SELECT * FROM wheel_rewards ORDER BY created_at").all();
+  const dayKey = brusselsDayKey();
   const users = await env.DB.prepare(`SELECT u.discord_id,u.username,u.global_name AS display_name,u.points,u.total_earned,u.total_spent,
     COALESCE(
       CAST(gen_setting.value AS INTEGER),
       CAST((SELECT value FROM app_settings WHERE key='default_generation_cooldown_seconds') AS INTEGER),
       900
     ) AS generation_cooldown_seconds,
+    COALESCE(
+      CAST(limit_setting.value AS INTEGER),
+      CAST((SELECT value FROM app_settings WHERE key='default_daily_generation_limit') AS INTEGER),
+      6
+    ) AS daily_generation_limit,
+    COALESCE((SELECT dgu.used FROM daily_generation_usage dgu WHERE dgu.user_id=u.id AND dgu.day_key=?),0) AS generations_today,
     (SELECT COUNT(*) FROM deliveries d WHERE d.user_id=u.id) AS generations,
     (SELECT COUNT(*) FROM purchases p WHERE p.user_id=u.id) AS purchases
     FROM users u
     LEFT JOIN app_settings gen_setting ON gen_setting.key=('user_generation_cooldown:' || u.discord_id)
-    ORDER BY u.created_at DESC LIMIT 200`).all();
+    LEFT JOIN app_settings limit_setting ON limit_setting.key=('user_daily_generation_limit:' || u.discord_id)
+    ORDER BY u.created_at DESC LIMIT 200`).bind(dayKey).all();
   const settingsRows = await env.DB.prepare("SELECT key,value FROM app_settings").all();
   const history = await getAdminHistoryData(env);
   const timers = await getAdminTimersData(env);
   const settings = Object.fromEntries(settingsRows.results.map(x => [x.key,x.value]));
   return json({
-    api_version:"admin-user-cooldown-v5",
+    api_version:"vip-daily-limits-v6",
     services:services.results.map(x=>({...x,stock:Number(x.stock),cooldown_seconds:Number(x.cooldown_seconds),enabled:!!x.enabled})),
     products:products.results.map(x=>({...x,stock:Number(x.stock),price:Number(x.price),enabled:!!x.enabled})),
     wheel_rewards:wheel.results.map(x=>({...x,points:Number(x.points),weight:Number(x.weight)})),
-    users:users.results.map(x=>({...x,points:Number(x.points),total_earned:Number(x.total_earned),total_spent:Number(x.total_spent),generations:Number(x.generations),purchases:Number(x.purchases),generation_cooldown_seconds:Number(x.generation_cooldown_seconds || 900)})),
+    users:users.results.map(x=>({...x,
+      points:Number(x.points),
+      total_earned:Number(x.total_earned),
+      total_spent:Number(x.total_spent),
+      generations:Number(x.generations),
+      purchases:Number(x.purchases),
+      generation_cooldown_seconds:Number(x.generation_cooldown_seconds ?? 900),
+      daily_generation_limit:Number(x.daily_generation_limit ?? 6),
+      generations_today:Number(x.generations_today || 0)
+    })),
     settings,
     history,
-    timers
+    timers,
+    daily_usage_day:dayKey,
+    daily_usage_timezone:"Europe/Brussels"
   },200,env,request);
 }
 
@@ -520,9 +627,12 @@ async function deleteWheelReward(request,env,id){const count=await env.DB.prepar
 async function updateSettings(request,env){
   const b=await parseJson(request);
   const defaultMinutes=Number(b.default_generation_cooldown_minutes ?? 15);
+  const defaultDailyLimit=Number(b.default_daily_generation_limit ?? 6);
   if(!Number.isFinite(defaultMinutes)||defaultMinutes<0||defaultMinutes>525600)throw httpError(400,"Temps gen par défaut invalide.");
+  if(!Number.isInteger(defaultDailyLimit)||defaultDailyLimit<0||defaultDailyLimit>100000)throw httpError(400,"Limite journalière par défaut invalide.");
   const values={
     default_generation_cooldown_seconds:Math.round(defaultMinutes*60),
+    default_daily_generation_limit:defaultDailyLimit,
     wheel_cooldown_seconds:Math.max(0,Number(b.wheel_cooldown_seconds||0)),
     starting_points:Math.max(0,Number(b.starting_points||0))
   };
@@ -545,6 +655,21 @@ async function setUserGenerationCooldown(request, env, discordId) {
   await env.DB.prepare(`INSERT INTO app_settings(key,value) VALUES(?,?)
     ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(key,String(seconds)).run();
   return json({ok:true,discord_id:cleanId,minutes:seconds/60,seconds},200,env,request);
+}
+
+
+async function setUserDailyGenerationLimit(request, env, discordId) {
+  const cleanId = String(discordId || "").trim();
+  if (!/^\d{5,30}$/.test(cleanId)) throw httpError(400, "ID Discord invalide.");
+  const user = await env.DB.prepare("SELECT id FROM users WHERE discord_id=?").bind(cleanId).first();
+  if (!user) throw httpError(404, "Utilisateur introuvable. Il doit s’être connecté au site au moins une fois.");
+  const body = await parseJson(request);
+  const limit = Number(body.limit);
+  if (!Number.isInteger(limit) || limit < 0 || limit > 100000) throw httpError(400, "Limite invalide (0 à 100 000). 0 signifie illimité.");
+  const key = `user_daily_generation_limit:${cleanId}`;
+  await env.DB.prepare(`INSERT INTO app_settings(key,value) VALUES(?,?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(key,String(limit)).run();
+  return json({ok:true,discord_id:cleanId,limit,unlimited:limit===0},200,env,request);
 }
 
 async function setUserTimer(request, env, discordId) {
