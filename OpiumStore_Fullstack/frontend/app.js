@@ -12,6 +12,8 @@
     catalog: null,
     wallet: [],
     admin: null,
+    adminHistory: null,
+    adminHistoryLoading: false,
     page: "home",
     adminTab: "services",
     wheelRotation: 0,
@@ -267,7 +269,7 @@
   function adminPage() {
     if (!state.me?.is_admin) return `<div class="empty">Accès refusé.</div>`;
     if (!state.admin) return `<div class="empty">Chargement du panel admin…</div>`;
-    const tabs = [["services","Services"],["products","Boutique"],["wheel","Roue"],["users","Utilisateurs"],["settings","Réglages"]];
+    const tabs = [["services","Services"],["products","Boutique"],["wheel","Roue"],["users","Utilisateurs"],["history","Historique"],["settings","Réglages"]];
     return `<section class="page"><div class="section-head"><div><span class="eyebrow">ADMINISTRATION</span><h2>Panel serveur</h2><p>Toutes les modifications s’appliquent immédiatement à tous les utilisateurs.</p></div></div><div class="admin-tabs">${tabs.map(([id,label]) => `<button class="admin-tab ${state.adminTab===id?"active":""}" data-admin-tab="${id}">${label}</button>`).join("")}</div>${adminTabContent()}</section>`;
   }
 
@@ -276,6 +278,7 @@
     if (state.adminTab === "products") return adminProducts();
     if (state.adminTab === "wheel") return adminWheel();
     if (state.adminTab === "users") return adminUsers();
+    if (state.adminTab === "history") return adminHistory();
     return adminSettings();
   }
 
@@ -300,6 +303,46 @@
   function adminUsers() {
     const users = state.admin.users || [];
     return `<article class="admin-card"><div style="overflow:auto"><table class="user-table"><thead><tr><th>Discord</th><th>Points</th><th>Générations</th><th>Achats</th><th>Ajuster</th></tr></thead><tbody>${users.map(u => `<tr><td><b>${escapeHtml(u.display_name || u.username)}</b><br><small class="muted">${escapeHtml(u.discord_id)}</small></td><td>${formatNumber(u.points)}</td><td>${formatNumber(u.generations)}</td><td>${formatNumber(u.purchases)}</td><td><div class="toolbar"><input class="input" style="width:100px" type="number" id="user-points-${u.discord_id}" value="100"><button class="btn btn-green btn-small" data-user-points="${u.discord_id}">Appliquer</button></div></td></tr>`).join("")}</tbody></table></div></article>`;
+  }
+
+  function shortId(value) {
+    const text = String(value || "");
+    return text.length > 16 ? `${text.slice(0, 8)}…${text.slice(-6)}` : text;
+  }
+
+  function adminHistory() {
+    if (state.adminHistoryLoading) return `<article class="admin-card"><div class="empty">Chargement de l’historique…</div></article>`;
+    const history = state.adminHistory;
+    if (!history) return `<article class="admin-card"><div class="empty"><b>Historique non chargé.</b><br><br><button class="btn btn-primary" id="refreshHistoryBtn">Charger l’historique</button></div></article>`;
+    const generations = history.generations || [];
+    const purchases = history.purchases || [];
+    const totals = history.totals || {};
+    const userCell = (item) => `<b>${escapeHtml(item.display_name || item.username || "Utilisateur")}</b><br><small class="muted">@${escapeHtml(item.username || "inconnu")} · ${escapeHtml(item.discord_id || "")}</small>`;
+    return `<div class="admin-list">
+      <div class="grid grid-3">
+        ${statCard("Générations totales", formatNumber(totals.generations || 0), `${formatNumber(generations.length)} dernières affichées`, "⚡")}
+        ${statCard("Achats totaux", formatNumber(totals.purchases || 0), `${formatNumber(purchases.length)} derniers affichés`, "🎁")}
+        ${statCard("Points dépensés", `${formatNumber(totals.points_spent || 0)} pts`, "Dans la boutique points", "◈")}
+      </div>
+      <div class="toolbar" style="justify-content:flex-end"><button class="btn btn-secondary btn-small" id="refreshHistoryBtn">↻ Actualiser</button></div>
+      <article class="admin-card"><h3>⚡ Historique des générations</h3><p class="muted">Les 250 générations les plus récentes. Le contenu livré reste masqué.</p><div style="overflow:auto"><table class="user-table"><thead><tr><th>Date</th><th>Utilisateur Discord</th><th>Service</th><th>Référence</th></tr></thead><tbody>${generations.length ? generations.map(item => `<tr><td>${formatDate(item.created_at)}</td><td>${userCell(item)}</td><td><b>${escapeHtml(item.service_name)}</b><br><small class="muted">${escapeHtml(item.service_id)}</small></td><td><code>${escapeHtml(shortId(item.id))}</code></td></tr>`).join("") : `<tr><td colspan="4"><div class="empty">Aucune génération enregistrée.</div></td></tr>`}</tbody></table></div></article>
+      <article class="admin-card"><h3>🎁 Historique des achats boutique points</h3><p class="muted">Les 250 achats les plus récents. Les phrases ou lignes livrées ne sont pas affichées.</p><div style="overflow:auto"><table class="user-table"><thead><tr><th>Date</th><th>Utilisateur Discord</th><th>Récompense</th><th>Prix</th><th>Référence</th></tr></thead><tbody>${purchases.length ? purchases.map(item => `<tr><td>${formatDate(item.created_at)}</td><td>${userCell(item)}</td><td><b>${escapeHtml(item.product_name)}</b><br><small class="muted">${escapeHtml(item.product_id)}</small></td><td><b>${formatNumber(item.price)} pts</b></td><td><code>${escapeHtml(shortId(item.id))}</code></td></tr>`).join("") : `<tr><td colspan="5"><div class="empty">Aucun achat enregistré.</div></td></tr>`}</tbody></table></div></article>
+    </div>`;
+  }
+
+  async function loadAdminHistory(force = false) {
+    if (state.adminHistoryLoading || (state.adminHistory && !force)) return;
+    state.adminHistoryLoading = true;
+    render();
+    try {
+      state.adminHistory = await api("/api/admin/history");
+    } catch (error) {
+      showToast(error.message, true);
+      state.adminHistory = null;
+    } finally {
+      state.adminHistoryLoading = false;
+      render();
+    }
   }
 
   function adminSettings() {
@@ -330,6 +373,8 @@
 
     if (page === "admin") {
       state.admin = null;
+      state.adminHistory = null;
+      state.adminHistoryLoading = false;
       render();
       window.scrollTo({top:0, behavior:"smooth"});
       try {
@@ -458,7 +503,13 @@
     const buy = event.target.closest("[data-buy]");
     if (buy) { await handlePurchase(buy.dataset.buy); return; }
     const adminTab = event.target.closest("[data-admin-tab]");
-    if (adminTab) { state.adminTab = adminTab.dataset.adminTab; render(); return; }
+    if (adminTab) {
+      state.adminTab = adminTab.dataset.adminTab;
+      render();
+      if (state.adminTab === "history") await loadAdminHistory();
+      return;
+    }
+    if (event.target.id === "refreshHistoryBtn") { await loadAdminHistory(true); return; }
     const adminAction = event.target.closest("[data-save-service],[data-restock-service],[data-clear-service],[data-delete-service],[data-toggle-service],[data-save-product],[data-restock-product],[data-clear-product],[data-delete-product],[data-toggle-product],[data-save-wheel],[data-delete-wheel],[data-user-points]");
     if (adminAction) { await handleAdminAction(adminAction); return; }
     if (event.target.id === "spinBtn") { await handleSpin(); return; }
