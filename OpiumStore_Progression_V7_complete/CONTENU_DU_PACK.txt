@@ -1,0 +1,7 @@
+CONTENU DU PACK OPIUMSTORE PROGRESSION V7
+
+- INSTALLER_V7.bat : met à jour ton projet actuel et crée une sauvegarde.
+- DEPLOYER_V7.bat : applique migration_v7.sql sur D1 et déploie le Worker.
+- payload/ : fichiers de remplacement utilisés par l'installateur.
+- PROJET_COMPLET/ : projet Fullstack complet en cas de nouvelle installation.
+- LISEZ-MOI-V7.txt : instructions et liste des nouveautés.

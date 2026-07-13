@@ -1,0 +1,26 @@
+OPIUMSTORE V6 — VIP + LIMITES JOURNALIERES
+
+Ajouts :
+- nouvelle page « VIP & offres » ;
+- cartes Gratuit, Boost et VIP ;
+- sections Support et Règlement ;
+- limite de générations par jour, individuelle par ID Discord ;
+- valeur par défaut : 6 générations/jour ;
+- 0 = illimité ;
+- affichage du quota du jour dans le générateur ;
+- réinitialisation quotidienne selon Europe/Brussels ;
+- cooldown toujours isolé par utilisateur et par service.
+
+Fichiers à remplacer :
+- frontend/app.js
+- frontend/index.html
+- worker/src/index.js
+
+Fichiers SQL à placer dans worker :
+- migration_v5.sql
+- migration_v6.sql
+
+Ajoute facultativement dans frontend/config.js :
+DISCORD_URL: "https://discord.gg/TON-LIEN"
+
+Le bouton « Devenir VIP » utilise AUTOSHOP_URL déjà présent dans config.js.

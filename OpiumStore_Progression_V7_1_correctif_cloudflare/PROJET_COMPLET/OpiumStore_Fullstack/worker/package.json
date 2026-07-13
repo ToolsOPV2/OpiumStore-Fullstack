@@ -1,0 +1,17 @@
+{
+  "name": "opium-store-api",
+  "version": "7.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 execute opium-store-db --local --file=./schema_v7_full.sql",
+    "db:remote": "wrangler d1 execute opium-store-db --remote --file=./schema_v7_full.sql",
+    "migrate:v7:local": "wrangler d1 execute opium-store-db --local --file=./migration_v7.sql",
+    "migrate:v7:remote": "wrangler d1 execute opium-store-db --remote --file=./migration_v7.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

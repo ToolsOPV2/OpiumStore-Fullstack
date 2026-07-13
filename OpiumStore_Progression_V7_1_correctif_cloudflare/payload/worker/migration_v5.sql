@@ -1,6 +1,7 @@
 -- V5 : garantit un cooldown isolé par utilisateur ET par service.
 -- Cette migration conserve les timers existants.
 
+-- Compatibilité Cloudflare : ne pas utiliser BEGIN/COMMIT dans les fichiers exécutés par Wrangler.
 INSERT INTO app_settings(key, value)
 VALUES ('default_generation_cooldown_seconds', '900')
 ON CONFLICT(key) DO NOTHING;
@@ -21,4 +22,3 @@ GROUP BY user_id, service_id;
 DROP TABLE generator_cooldowns;
 ALTER TABLE generator_cooldowns_v5 RENAME TO generator_cooldowns;
 CREATE INDEX IF NOT EXISTS idx_generator_cooldowns_user ON generator_cooldowns(user_id, next_allowed_at);
-

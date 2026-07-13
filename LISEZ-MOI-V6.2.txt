@@ -1,0 +1,11 @@
+﻿OPIUMSTORE V6.2 — INSTALLATION CORRIGÉE
+
+1. Clic droit sur le ZIP.
+2. Clique sur « Extraire tout ».
+3. Ouvre le dossier extrait.
+4. Lance INSTALLER_V6_2.bat.
+5. Lance ensuite DEPLOYER_V6_2.bat.
+
+Ne lance pas les BAT directement depuis le ZIP.
+
+Cette version affiche le fichier exact en erreur, détecte le dossier imbriqué, met à jour toutes les copies Worker et utilise le frontend réellement suivi par Git.

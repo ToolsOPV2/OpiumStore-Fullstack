@@ -1,4 +1,4 @@
--- V5 : garantit un cooldown isolé par utilisateur ET par service.
+﻿-- V5 : garantit un cooldown isolÃ© par utilisateur ET par service.
 -- Cette migration conserve les timers existants.
 
 INSERT INTO app_settings(key, value)

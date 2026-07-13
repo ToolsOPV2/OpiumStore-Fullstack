@@ -1,0 +1,41 @@
+OPIUMSTORE — PROGRESSION V7
+===========================
+
+INSTALLATION SUR TON PROJET ACTUEL
+1. Clic droit sur le ZIP > Extraire tout.
+2. Lance INSTALLER_V7.bat.
+3. Le script crée automatiquement une sauvegarde des anciens fichiers.
+4. Lance DEPLOYER_V7.bat pour appliquer la migration D1 et déployer le Worker.
+5. Pousse les fichiers frontend sur GitHub/Cloudflare Pages si ton frontend est déployé par Git.
+
+NE LANCE PAS LES BAT DIRECTEMENT DEPUIS LE ZIP.
+
+NOUVEAUTÉS
+- XP, niveaux et barre de progression.
+- Récompenses automatiques à certains niveaux.
+- Séries quotidiennes, meilleur record et protecteurs de série.
+- Missions classiques et hebdomadaires.
+- Classements XP, niveau, série, missions et progression générale.
+- Périodes hebdomadaire, mensuelle et globale.
+- Événements communautaires avec participation individuelle.
+- Inventaire dans le Wallet.
+- Coffres communs, rares, épiques, légendaires et événementiels.
+- Tickets de roue et boosts XP x2.
+- Titres et cosmétiques équipables.
+- Conversion automatique des cosmétiques en double en points.
+- Codes promos sécurisés et utilisables une seule fois par membre.
+- Récompenses quotidiennes validées une seule fois par jour.
+- Création d’événements et de codes promos depuis le panel admin.
+- Réglages administrateur des gains XP et récompenses quotidiennes.
+
+CODE PROMO DE DÉMARRAGE
+OPIUM2026
+Récompense : 250 points, 150 XP et un coffre commun.
+Limite initiale : 500 utilisations. Tu peux le désactiver dans D1 ou créer d’autres codes depuis le panel admin.
+
+BASE D1
+Projet existant : applique uniquement worker/migration_v7.sql.
+Nouveau projet : utilise worker/schema_v7_full.sql dans le dossier PROJET_COMPLET.
+
+SÉCURITÉ
+L’XP, les coffres, les probabilités, les points, les missions, les tickets, les séries et les codes promos sont calculés dans le Worker. Le navigateur ne décide jamais des récompenses.

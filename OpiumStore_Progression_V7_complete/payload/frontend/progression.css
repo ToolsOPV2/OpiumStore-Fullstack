@@ -1,0 +1,62 @@
+/* OpiumStore Progression V7 — extension visuelle compatible avec le thème existant */
+.level-pill{
+  display:inline-flex;align-items:center;gap:7px;padding:9px 13px;border-radius:999px;
+  border:1px solid rgba(250,204,21,.28);background:rgba(250,204,21,.08);color:#fde68a
+}
+.level-pill b{font-size:15px;color:#fff}.level-pill small{font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+
+.card-heading,.xp-card-head,.mission-top,.event-head,.event-numbers,.event-reward,.mission-reward,.effect-row{
+  display:flex;align-items:center;justify-content:space-between;gap:14px
+}
+.xp-card{position:relative;overflow:hidden}
+.xp-card::after{content:"";position:absolute;width:180px;height:180px;right:-75px;top:-85px;border-radius:50%;background:rgba(168,85,247,.16);filter:blur(14px);pointer-events:none}
+.level-orb{display:grid;place-items:center;width:58px;height:58px;border-radius:18px;font-size:22px;font-weight:900;color:#fff;background:linear-gradient(145deg,#7c3aed,#2563eb);box-shadow:0 12px 34px rgba(124,58,237,.32)}
+.xp-line{display:flex;justify-content:space-between;gap:12px;margin:19px 0 9px;color:#cbd5e1;font-size:13px}.xp-line b{color:#f8fafc}
+.progress-track{height:12px;border-radius:999px;background:rgba(148,163,184,.13);border:1px solid rgba(148,163,184,.12);overflow:hidden}
+.progress-track span{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,#8b5cf6,#3b82f6,#06b6d4);box-shadow:0 0 20px rgba(59,130,246,.45);transition:width .45s ease}
+.progress-track.small{height:8px;margin:12px 0 15px}
+.daily-card{display:flex;flex-direction:column;justify-content:center;gap:15px;background:linear-gradient(145deg,rgba(16,185,129,.10),rgba(15,23,42,.8))}
+.streak-card{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:17px}.streak-card .btn{grid-column:1/-1}.streak-flame{font-size:54px;filter:drop-shadow(0 0 18px rgba(249,115,22,.45))}
+
+.mission-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.mission-card{padding:19px;border-radius:20px;border:1px solid rgba(148,163,184,.15);background:rgba(15,23,42,.62);display:flex;flex-direction:column;gap:8px;transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}
+.mission-card:hover{transform:translateY(-2px);border-color:rgba(96,165,250,.32)}
+.mission-card.ready{border-color:rgba(34,197,94,.48);box-shadow:0 0 25px rgba(34,197,94,.10)}
+.mission-card.claimed{opacity:.66}.mission-card h3{margin:5px 0 0}.mission-card p{margin:0;color:#94a3b8;line-height:1.5}
+.mission-top{font-size:12px;color:#94a3b8}.mission-scope{font-size:10px;font-weight:900;letter-spacing:.1em;color:#c4b5fd}
+.mission-reward{margin-top:auto;align-items:flex-end}.mission-reward>span{font-size:12px;color:#cbd5e1;line-height:1.45}
+.promo-card{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}.promo-card .input{text-transform:uppercase;letter-spacing:.12em;font-weight:800}
+
+.inventory-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(285px,1fr));gap:14px}
+.inventory-card{position:relative;display:grid;grid-template-columns:auto 1fr;align-items:start;gap:15px;padding:18px;border-radius:20px;background:rgba(15,23,42,.72);border:1px solid rgba(148,163,184,.16);overflow:hidden}
+.inventory-card::before{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:#64748b}
+.inventory-card.rarity-rare::before{background:#3b82f6}.inventory-card.rarity-epic::before{background:#a855f7}.inventory-card.rarity-legendary::before{background:#f59e0b}.inventory-card.rarity-event::before{background:#10b981}
+.inventory-icon{display:grid;place-items:center;width:60px;height:60px;border-radius:18px;background:rgba(255,255,255,.055);font-size:30px}
+.inventory-copy h3{margin:5px 0}.inventory-copy p{margin:0 0 8px;color:#94a3b8;font-size:13px;line-height:1.45}.inventory-copy b{font-size:13px;color:#e2e8f0}
+.inventory-card>.btn,.inventory-card>.inventory-note{grid-column:1/-1}.inventory-note{font-size:12px;color:#94a3b8;padding:8px 10px;border-radius:10px;background:rgba(148,163,184,.07)}
+.rarity-chip{display:inline-flex;padding:4px 8px;border-radius:999px;font-size:9px;font-weight:900;letter-spacing:.09em;text-transform:uppercase;color:#cbd5e1;background:rgba(148,163,184,.1)}
+.rarity-rare .rarity-chip{color:#93c5fd;background:rgba(59,130,246,.12)}.rarity-epic .rarity-chip{color:#d8b4fe;background:rgba(168,85,247,.12)}.rarity-legendary .rarity-chip{color:#fde68a;background:rgba(245,158,11,.12)}.rarity-event .rarity-chip{color:#6ee7b7;background:rgba(16,185,129,.12)}
+.active-effects{margin-bottom:18px;border-color:rgba(249,115,22,.28)}.active-effects h3{margin-top:0}.effect-row{padding:10px 0;border-top:1px solid rgba(148,163,184,.1)}.effect-row span{font-size:12px;color:#94a3b8}
+
+.leaderboard-filters{display:flex;flex-wrap:wrap;justify-content:space-between;gap:13px;margin-bottom:15px}.leaderboard-filters>div{display:flex;flex-wrap:wrap;gap:8px}
+.filter-chip{border:1px solid rgba(148,163,184,.16);background:rgba(148,163,184,.06);color:#94a3b8;padding:9px 12px;border-radius:999px;font-weight:800;cursor:pointer}.filter-chip.active{color:#fff;border-color:rgba(139,92,246,.55);background:linear-gradient(135deg,rgba(124,58,237,.4),rgba(37,99,235,.35))}
+.leaderboard-card{padding:8px 17px}.leaderboard-row{display:grid;grid-template-columns:55px 44px minmax(0,1fr) auto;align-items:center;gap:12px;padding:13px 4px;border-bottom:1px solid rgba(148,163,184,.1)}.leaderboard-row:last-child{border-bottom:0}.leaderboard-row.is-me{margin:4px -8px;padding-left:12px;padding-right:12px;border-radius:16px;background:rgba(139,92,246,.13);border:1px solid rgba(139,92,246,.26)}
+.rank{font-weight:900;color:#94a3b8}.rank-1,.rank-2,.rank-3{font-size:23px}.leader-avatar{width:42px;height:42px;border-radius:14px;object-fit:cover}.leader-user{display:flex;flex-direction:column;min-width:0}.leader-user b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.leader-user span{font-size:12px;color:#94a3b8}.leaderboard-row>strong{text-align:right;color:#e2e8f0}
+
+.event-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}.event-card{padding:21px;border-radius:23px;background:linear-gradient(145deg,rgba(8,145,178,.10),rgba(15,23,42,.78));border:1px solid rgba(34,211,238,.18);display:flex;flex-direction:column;gap:16px}.event-icon{display:grid;place-items:center;min-width:62px;height:62px;border-radius:20px;background:rgba(6,182,212,.12);font-size:32px}.event-head{justify-content:flex-start;align-items:flex-start}.event-head h3{margin:2px 0 5px}.event-head p{margin:0;color:#94a3b8;line-height:1.45}.event-numbers span,.event-card>small{color:#94a3b8;font-size:12px}.event-reward{align-items:flex-end}.event-reward>span{font-size:12px;color:#cbd5e1;line-height:1.45}
+
+.reward-modal{text-align:center;padding:10px}.reward-burst{font-size:66px;animation:reward-pop .55s ease both}.reward-modal h2{font-size:28px;margin:7px 0 17px}.reward-modal p{color:#cbd5e1;font-size:16px}.reward-line{padding:12px;margin:8px 0;border-radius:14px;background:rgba(148,163,184,.08);font-weight:800}.reward-modal .btn{margin-top:17px;width:100%}
+@keyframes reward-pop{0%{transform:scale(.3) rotate(-18deg);opacity:0}70%{transform:scale(1.15) rotate(6deg)}100%{transform:scale(1);opacity:1}}
+
+@media(max-width:760px){
+  .level-pill{padding:8px 10px}.level-pill small{display:none}.promo-card{grid-template-columns:1fr}.leaderboard-filters{display:grid}.leaderboard-row{grid-template-columns:42px 38px minmax(0,1fr)}.leaderboard-row>strong{grid-column:2/-1;text-align:left;font-size:13px}.leader-avatar{width:36px;height:36px}.event-grid,.inventory-grid,.mission-grid{grid-template-columns:1fr}.event-reward,.mission-reward{align-items:stretch;flex-direction:column}.streak-card{grid-template-columns:auto 1fr}
+}
+
+/* Animations et ambiance propres à chaque rareté de coffre */
+.reward-modal{position:relative;overflow:hidden;border-radius:22px}
+.reward-rays{position:absolute;inset:-45%;z-index:-1;opacity:.18;background:repeating-conic-gradient(from 0deg,transparent 0 12deg,currentColor 12deg 20deg);animation:reward-rays 8s linear infinite}
+.reward-common{color:#cbd5e1}.reward-rare{color:#60a5fa}.reward-epic{color:#c084fc}.reward-legendary{color:#fbbf24}.reward-event{color:#34d399}
+.reward-rare .reward-burst{filter:drop-shadow(0 0 22px rgba(59,130,246,.8))}.reward-epic .reward-burst{filter:drop-shadow(0 0 28px rgba(168,85,247,.9));animation-duration:.72s}.reward-legendary .reward-burst{filter:drop-shadow(0 0 36px rgba(245,158,11,1));animation:reward-legendary .9s ease both}.reward-event .reward-burst{filter:drop-shadow(0 0 30px rgba(16,185,129,.9));animation:reward-event .85s ease both}
+@keyframes reward-rays{to{transform:rotate(360deg)}}
+@keyframes reward-legendary{0%{transform:scale(.2) rotate(-30deg);opacity:0}45%{transform:scale(1.35) rotate(10deg)}65%{transform:scale(.9) rotate(-4deg)}100%{transform:scale(1);opacity:1}}
+@keyframes reward-event{0%{transform:translateY(30px) scale(.4);opacity:0}55%{transform:translateY(-12px) scale(1.18)}100%{transform:translateY(0) scale(1);opacity:1}}

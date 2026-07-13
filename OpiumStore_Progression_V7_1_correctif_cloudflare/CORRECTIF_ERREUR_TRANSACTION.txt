@@ -1,0 +1,13 @@
+CORRECTIF ERREUR CLOUDFLARE BEGIN TRANSACTION
+=============================================
+
+Erreur corrigée : Cloudflare refuse BEGIN TRANSACTION / COMMIT dans la migration exécutée par Wrangler.
+
+Méthode recommandée :
+1. Extrais entièrement ce nouveau ZIP.
+2. Lance INSTALLER_V7.bat pour recopier la migration corrigée dans ton projet.
+3. Lance DEPLOYER_V7.bat.
+
+Tu peux relancer la migration après l'échec précédent : les créations utilisent IF NOT EXISTS et les données initiales utilisent INSERT OR IGNORE / ON CONFLICT.
+
+Le nouveau DEPLOYER_V7.ps1 crée en plus un fichier SQL temporaire nettoyé automatiquement avant l'envoi à Cloudflare.

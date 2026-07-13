@@ -1,0 +1,12 @@
+CORRECTION V6.1
+
+Le premier installateur cherchait uniquement :
+C:\Users\ggpix\Documents\OpiumStore_Fullstack\worker\package.json
+
+Cette version detecte aussi le dossier reel imbrique :
+C:\Users\ggpix\Documents\OpiumStore_Fullstack\OpiumStore_Fullstack\worker\package.json
+
+1. Extrais tout le ZIP dans un nouveau dossier.
+2. Lance INSTALLER_V6_1.bat.
+3. Lance DEPLOYER_V6_1.bat.
+4. Verifie /health?v=61 puis recharge le site avec Ctrl+F5.

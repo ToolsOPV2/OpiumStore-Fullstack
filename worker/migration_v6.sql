@@ -1,5 +1,5 @@
--- V6 : quota journalier individuel, réinitialisé selon le jour Europe/Brussels.
--- 0 génération/jour signifie illimité.
+﻿-- V6 : quota journalier individuel, rÃ©initialisÃ© selon le jour Europe/Brussels.
+-- 0 gÃ©nÃ©ration/jour signifie illimitÃ©.
 
 INSERT INTO app_settings(key, value)
 VALUES ('default_daily_generation_limit', '6')

@@ -1,5 +1,6 @@
 -- V5 : garantit un cooldown isolé par utilisateur ET par service.
 -- Cette migration conserve les timers existants.
+BEGIN TRANSACTION;
 
 INSERT INTO app_settings(key, value)
 VALUES ('default_generation_cooldown_seconds', '900')
@@ -22,3 +23,4 @@ DROP TABLE generator_cooldowns;
 ALTER TABLE generator_cooldowns_v5 RENAME TO generator_cooldowns;
 CREATE INDEX IF NOT EXISTS idx_generator_cooldowns_user ON generator_cooldowns(user_id, next_allowed_at);
 
+COMMIT;

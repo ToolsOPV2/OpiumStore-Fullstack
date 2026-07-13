@@ -1,6 +1,7 @@
 -- V6 : quota journalier individuel, réinitialisé selon le jour Europe/Brussels.
 -- 0 génération/jour signifie illimité.
 
+-- Compatibilité Cloudflare : ne pas utiliser BEGIN/COMMIT dans les fichiers exécutés par Wrangler.
 INSERT INTO app_settings(key, value)
 VALUES ('default_daily_generation_limit', '6')
 ON CONFLICT(key) DO NOTHING;
@@ -15,4 +16,3 @@ CREATE TABLE IF NOT EXISTS daily_generation_usage (
 
 CREATE INDEX IF NOT EXISTS idx_daily_generation_usage_day
 ON daily_generation_usage(day_key, user_id);
-
