@@ -8,13 +8,26 @@
   <title>OpiumStore Hub</title>
   <meta name="description" content="OpiumStore Hub — connexion Discord, générateur FIFO, boutique à points et panel admin.">
   <link rel="icon" href="assets/logo.png" type="image/png">
-  <link rel="manifest" href="manifest.webmanifest?v=20260713-v74">
+  <link rel="manifest" href="manifest.webmanifest?v=20260713-v75">
   <link rel="apple-touch-icon" href="assets/icon-192.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="OpiumStore">
   <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="progression.css?v=20260713-v74">
+  <link rel="stylesheet" href="progression.css?v=20260713-v75">
+  <script>
+    (() => {
+      const AUTOSHOP_DESTINATION = "https://opium-store.opiumstore.workers.dev/";
+      window.OPIUM_AUTOSHOP_URL = AUTOSHOP_DESTINATION;
+      document.addEventListener("click", event => {
+        const link = event.target.closest?.("#autoshopLink, [data-autoshop-link]");
+        if (!link) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        window.location.assign(AUTOSHOP_DESTINATION);
+      }, true);
+    })();
+  </script>
 </head>
 <body>
   <div id="boot" class="boot-screen">
@@ -54,7 +67,7 @@
       </div>
 
       <nav id="sideNav" class="side-nav" aria-label="Navigation principale">
-        <a id="autoshopLink" class="nav-item nav-item-featured" href="#" target="_blank" rel="noopener"><span>🛍</span>AutoShop ↗</a>
+        <a id="autoshopLink" class="nav-item nav-item-featured" href="https://opium-store.opiumstore.workers.dev/" data-autoshop-link><span>🛍</span>AutoShop ↗</a>
         <div class="nav-divider" aria-hidden="true"></div>
         <button class="nav-item active" data-page="home"><span>⌂</span>Accueil</button>
         <button class="nav-item" data-page="generator"><span>⚡</span>Générateur</button>
@@ -100,7 +113,7 @@
     </div>
   </div>
 
-  <script src="config.js?v=20260713-7"></script>
-  <script src="app.js?v=20260713-v74" defer></script>
+  <script src="config.js?v=20260713-v75"></script>
+  <script src="app.js?v=20260713-v75" defer></script>
 </body>
 </html>

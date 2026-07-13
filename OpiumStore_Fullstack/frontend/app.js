@@ -3,7 +3,7 @@
 
   const config = window.OPIUM_CONFIG || {};
   const API_BASE = String(config.API_BASE || "").replace(/\/$/, "");
-  const AUTOSHOP_URL = "https://opium-store.opiumstore.workers.dev/";
+  const AUTOSHOP_URL = window.OPIUM_AUTOSHOP_URL || "https://opium-store.opiumstore.workers.dev/";
   const DISCORD_URL = config.DISCORD_URL || config.SUPPORT_URL || "";
   const TOKEN_KEY = "opium_store_session";
 
@@ -180,7 +180,11 @@
     $("#topPoints").textContent = formatNumber(state.me.points);
     if ($("#topLevel")) $("#topLevel").textContent = formatNumber(profile?.level || 1);
     $("#adminNav").classList.toggle("hidden", !state.me.is_admin);
-    $("#autoshopLink").href = AUTOSHOP_URL;
+    const autoshopLink = $("#autoshopLink");
+    if (autoshopLink) {
+      autoshopLink.href = AUTOSHOP_URL;
+      autoshopLink.dataset.autoshopLink = "true";
+    }
   }
 
   function showLogin() {
@@ -1152,7 +1156,11 @@
 
   async function init() {
     try {
-      if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(error => console.warn("Service Worker:", error));
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("./sw.js?v=20260713-v75", {updateViaCache:"none"})
+          .then(registration => registration.update())
+          .catch(error => console.warn("Service Worker:", error));
+      }
       await exchangeAuthCode();
       if (!state.token) return showLogin();
       await loadBaseData();
