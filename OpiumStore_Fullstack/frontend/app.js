@@ -168,24 +168,47 @@
     return user?.avatar_url || "assets/logo.png";
   }
 
+  function rankInfo(value) {
+    const key = String(value?.key || value || "free").toLowerCase();
+    return ({
+      free:{key:"free",label:"Free",emoji:"🆓",className:"rank-free"},
+      boost:{key:"boost",label:"Boost",emoji:"🚀",className:"rank-boost"},
+      vip:{key:"vip",label:"VIP",emoji:"👑",className:"rank-vip"},
+      admin:{key:"admin",label:"Admin",emoji:"🛡️",className:"rank-admin"}
+    })[key] || {key:"free",label:"Free",emoji:"🆓",className:"rank-free"};
+  }
+
+  function rankOptions(selected = "free") {
+    return ["free","boost","vip","admin"].map(key => {
+      const rank=rankInfo(key);
+      return `<option value="${key}" ${key===selected?"selected":""}>${rank.emoji} ${rank.label}</option>`;
+    }).join("");
+  }
+
+  function accessRankOptions(selected = "free") {
+    return ["free","boost","vip"].map(key => {
+      const rank=rankInfo(key);
+      return `<option value="${key}" ${key===selected?"selected":""}>${rank.emoji} ${rank.label}</option>`;
+    }).join("");
+  }
   function setUserChrome() {
     if (!state.me) return;
     $("#sidebarName").textContent = state.me.display_name || state.me.username;
     $("#sidebarDiscord").textContent = `@${state.me.username}`;
-    const profile = state.progression?.profile;
-    const title = profile?.active_title ? `${profile.active_title.emoji} ${profile.active_title.name}` : "Membre";
-    $("#sidebarRole").textContent = state.me.is_admin ? "Administrateur" : title;
+    const rank=rankInfo(state.me.rank || state.me.account_rank);
+    const role=$("#sidebarRole");
+    role.textContent = `${rank.emoji} ${rank.label}`;
+    role.className = `role-chip ${rank.className}`;
     $("#sidebarAvatar").src = avatarUrl(state.me);
     $("#topAvatar").src = avatarUrl(state.me);
     $("#topPoints").textContent = formatNumber(state.me.points);
+    const profile = state.progression?.profile;
     if ($("#topLevel")) $("#topLevel").textContent = formatNumber(profile?.level || 1);
     $("#adminNav").classList.toggle("hidden", !state.me.is_admin);
     const autoshopLink = $("#autoshopLink");
-    if (autoshopLink) {
-      autoshopLink.href = AUTOSHOP_URL;
-      autoshopLink.dataset.autoshopLink = "true";
-    }
+    if (autoshopLink) { autoshopLink.href = AUTOSHOP_URL; autoshopLink.dataset.autoshopLink = "true"; }
   }
+
 
   function showLogin() {
     boot.classList.add("hidden");
@@ -252,7 +275,7 @@
         <div class="hero-inner">
           <div class="hero-copy">
             <span class="eyebrow">BIENVENUE SUR OPIUMSTORE HUB</span>
-            <h1>Salut, ${escapeHtml(state.me.display_name || state.me.username)}.</h1>
+            <h1>Salut, ${escapeHtml(state.me.display_name || state.me.username)}.</h1><span class="rank-badge ${rankInfo(state.me.account_rank).className}">${rankInfo(state.me.account_rank).emoji} Rang ${rankInfo(state.me.account_rank).label}</span>
             <p>Progresse en utilisant le générateur, en accomplissant des missions, en ouvrant des coffres et en participant aux événements communautaires.</p>
             <div class="toolbar">
               <button class="btn btn-primary" data-page="generator">⚡ Ouvrir le générateur</button>
@@ -282,34 +305,35 @@
       </section>
     </section>`;
   }
-
   function serviceCard(s) {
     const wait = Number(s.cooldown_remaining || 0);
     const dailyRemaining = Number(state.catalog?.daily_generation_remaining);
     const dailyBlocked = Number.isFinite(dailyRemaining) && dailyRemaining === 0;
-    const disabled = s.stock <= 0 || wait || dailyBlocked;
-    const buttonLabel = s.stock <= 0 ? "Stock épuisé" : dailyBlocked ? "Limite journalière atteinte" : wait ? `Cooldown ${remaining(wait)}` : "Générer";
-    return `<article class="card service-card">
-      <div class="service-top"><div class="emoji-box">${escapeHtml(s.emoji)}</div><span class="badge ${s.stock > 0 ? "badge-green" : "badge-red"}">${formatNumber(s.stock)} en stock</span></div>
+    const locked = s.access_granted === false;
+    const required=rankInfo(s.required_rank || "free");
+    const disabled = locked || s.stock <= 0 || wait || dailyBlocked;
+    const buttonLabel = locked ? `Réservé ${required.label}` : s.stock <= 0 ? "Stock épuisé" : dailyBlocked ? "Limite journalière atteinte" : wait ? `Cooldown ${remaining(wait)}` : "Générer";
+    return `<article class="card service-card ${locked ? "service-locked" : ""}">
+      <div class="service-top"><div class="emoji-box">${escapeHtml(s.emoji)}</div><div class="toolbar"><span class="badge ${required.className}">${required.emoji} ${required.label}</span><span class="badge ${s.stock > 0 ? "badge-green" : "badge-red"}">${formatNumber(s.stock)} en stock</span></div></div>
       <div><h3>${escapeHtml(s.name)}</h3><p class="muted">${escapeHtml(s.description || "Distribution automatique dans l’ordre du stock.")}</p></div>
-      <div class="${wait ? "cooldown" : "stock"}">${wait ? `Disponible dans ${remaining(wait)}` : dailyBlocked ? "Quota journalier utilisé" : "Disponible maintenant"}</div>
+      <div class="${locked ? "access-locked" : wait ? "cooldown" : "stock"}">${locked ? `🔒 Rang ${required.label} requis` : wait ? `Disponible dans ${remaining(wait)}` : dailyBlocked ? "Quota journalier utilisé" : "Disponible maintenant"}</div>
       <button class="btn btn-primary" data-generate="${escapeHtml(s.id)}" ${disabled ? "disabled" : ""}>${buttonLabel}</button>
     </article>`;
   }
-
   function generatorPage() {
     const limit = Number(state.catalog?.daily_generation_limit ?? 6);
     const used = Number(state.catalog?.generations_today || 0);
     const remainingToday = Number(state.catalog?.daily_generation_remaining);
-    const quotaText = limit === 0
-      ? `Illimité · ${formatNumber(used)} génération(s) aujourd’hui`
-      : `${formatNumber(used)} / ${formatNumber(limit)} aujourd’hui · ${formatNumber(Math.max(0, Number.isFinite(remainingToday) ? remainingToday : limit - used))} restante(s)`;
+    const rank=rankInfo(state.me.account_rank);
+    const cooldown=Number(state.me.rank?.generation_cooldown_seconds || state.catalog?.rank?.generation_cooldown_seconds || 900);
+    const quotaText = limit === 0 ? `Illimité · ${formatNumber(used)} génération(s) aujourd’hui` : `${formatNumber(used)} / ${formatNumber(limit)} aujourd’hui · ${formatNumber(Math.max(0, Number.isFinite(remainingToday) ? remainingToday : limit - used))} restante(s)`;
     return `<section class="page">
-      <div class="section-head"><div><span class="eyebrow">DISTRIBUTION FIFO</span><h2>Générateur</h2><p>La première demande reçoit la première ligne du stock, puis la suivante reçoit la ligne 2.</p></div><span class="badge badge-green">${quotaText}</span></div>
+      <div class="section-head"><div><span class="eyebrow">DISTRIBUTION FIFO</span><h2>Générateur</h2><p>Rang actuel : <b>${rank.emoji} ${rank.label}</b> · cooldown automatique : <b>${remaining(cooldown)}</b>.</p></div><span class="badge badge-green">${quotaText}</span></div>
       ${state.generatorResult ? `<div class="line-result"><b>Ta ligne vient d’être livrée :</b><div class="secret-line">${escapeHtml(state.generatorResult.value)}</div><div class="toolbar"><button class="btn btn-green" data-copy="${escapeHtml(state.generatorResult.value)}">Copier</button><button class="btn btn-secondary" data-page="wallet">Voir le Wallet</button></div></div>` : ""}
       <div class="section grid grid-3">${(state.catalog?.services || []).map(serviceCard).join("") || '<div class="empty">Aucun service activé.</div>'}</div>
     </section>`;
   }
+
 
   function vipPage() {
     const supportButton = DISCORD_URL
@@ -324,19 +348,19 @@
       <div class="grid grid-3">
         <article class="card" style="display:flex;flex-direction:column;gap:16px">
           <div><div class="emoji-box">🆓</div><span class="eyebrow">GRATUIT</span><h2>Accès gratuit</h2><div class="stat-value">0€ <small>/ jour</small></div><p class="muted">Pour utiliser le générateur gratuitement avec une limite simple.</p></div>
-          <div class="admin-list"><div>✅ 6 générations par jour</div><div>⏱️ Cooldown de 15 minutes</div><div>🎁 Accès aux services publics</div><div>📦 Stocks selon disponibilité</div></div>
+          <div class="admin-list"><div>✅ 6 générations par jour</div><div>⏱️ Cooldown de 15 minutes</div><div>🎡 1 tour de roue gratuit toutes les 12 h</div><div>🎁 Accès aux services publics</div><div>📦 Stocks selon disponibilité</div></div>
           <button class="btn btn-green" data-page="generator" style="margin-top:auto">Commencer gratuitement</button>
         </article>
 
         <article class="card" style="display:flex;flex-direction:column;gap:16px;border:1px solid rgba(59,130,246,.55);box-shadow:0 0 32px rgba(37,99,235,.13)">
           <div><div class="emoji-box">🚀</div><span class="eyebrow">BOOST</span><h2>Accès Boost</h2><div class="stat-value">Boost Discord</div><p class="muted">Pour les membres qui boostent le serveur et veulent plus de générations.</p></div>
-          <div class="admin-list"><div>✅ 15 générations par jour</div><div>⏱️ Cooldown de 2 minutes</div><div>🚀 Avantage membre boost</div><div>📦 Plus de confort d’utilisation</div></div>
+          <div class="admin-list"><div>✅ 15 générations par jour</div><div>⏱️ Cooldown de 2 minutes</div><div>🎡 2 tours de roue gratuits toutes les 12 h</div><div>🎁 Récompense quotidienne +20 %</div><div>🚀 Accès aux services Boost</div><div>📦 Plus de confort d’utilisation</div></div>
           <div style="margin-top:auto">${discordButton}</div>
         </article>
 
         <article class="card" style="display:flex;flex-direction:column;gap:16px;border:1px solid rgba(168,85,247,.65);box-shadow:0 0 38px rgba(168,85,247,.18)">
           <div><div class="emoji-box">👑</div><span class="eyebrow">VIP</span><h2>VIP à vie</h2><div class="stat-value">6,99 € <small>à vie</small></div><p class="muted">L’offre premium pour profiter au maximum du générateur OpiumGen.</p></div>
-          <div class="admin-list"><div>♾️ Générations illimitées par jour</div><div>⏱️ Cooldown réduit à 1 minute</div><div>👑 Accès aux services VIP uniquement</div><div>🚀 Accès premium</div><div>🛠️ Support plus rapide</div></div>
+          <div class="admin-list"><div>♾️ Générations illimitées par jour</div><div>⏱️ Cooldown réduit à 1 minute</div><div>🎡 3 tours de roue gratuits toutes les 12 h</div><div>🎁 Récompense quotidienne +50 %</div><div>👑 Accès aux services VIP</div><div>🚀 Accès aux services Boost</div><div>🚀 Accès premium</div></div>
           <a class="btn btn-primary" href="${escapeHtml(AUTOSHOP_URL)}" target="_blank" rel="noopener" style="margin-top:auto">Devenir VIP</a>
         </article>
       </div>
@@ -363,7 +387,7 @@
       <div class="product-top"><div class="emoji-box">${escapeHtml(p.emoji)}</div><span class="badge badge-yellow">${formatNumber(p.price)} pts</span></div>
       <div><h3>${escapeHtml(p.name)}</h3><p class="muted">${escapeHtml(p.description || "Récompense numérique.")}</p></div>
       <span class="stock">${infinite ? "∞ Stock illimité" : `${formatNumber(p.stock)} ligne(s) disponible(s)`}</span>
-      <button class="btn btn-primary" data-buy="${escapeHtml(p.id)}" ${unavailable || state.me.points < p.price ? "disabled" : ""}>${unavailable ? "Rupture de stock" : state.me.points < p.price ? "Points insuffisants" : p.item_key ? "Acheter le coffre" : "Acheter"}</button>
+      <button class="btn btn-primary" data-buy="${escapeHtml(p.id)}" ${unavailable || state.me.points < p.price ? "disabled" : ""}>${unavailable ? "Rupture de stock" : state.me.points < p.price ? "Points insuffisants" : p.item_type === "ticket" ? "Acheter le ticket" : p.item_key ? "Acheter le coffre" : "Acheter"}</button>
     </article>`;
   }
 
@@ -392,26 +416,24 @@
       </section>
     </section>`;
   }
-
   function wheelPage() {
     const rewards = state.catalog?.wheel_rewards || [];
     const n = Math.max(1, rewards.length);
     const palette = ["#0284c7", "#2563eb", "#0891b2", "#0f766e", "#7c3aed", "#0369a1", "#1d4ed8", "#0e7490"];
     const gradient = rewards.map((_, i) => `${palette[i % palette.length]} ${(i * 360) / n}deg ${((i + 1) * 360) / n}deg`).join(",");
-    const labels = rewards.map((r, i) => {
-      const angle = (-90 + (i + .5) * 360 / n) * Math.PI / 180;
-      const x = 50 + 36 * Math.cos(angle), y = 50 + 36 * Math.sin(angle);
-      return `<span class="wheel-label" style="left:${x}%;top:${y}%">${escapeHtml(r.emoji)}</span>`;
-    }).join("");
+    const labels = rewards.map((r, i) => { const angle=(-90+(i+.5)*360/n)*Math.PI/180; return `<span class="wheel-label" style="left:${50+36*Math.cos(angle)}%;top:${50+36*Math.sin(angle)}%">${escapeHtml(r.emoji)}</span>`; }).join("");
     const wait = Number(state.catalog?.wheel_cooldown_remaining || 0);
     const tickets = itemQuantity("wheel_ticket");
-    const usable = !wait || tickets > 0;
-    const buttonText = wait ? (tickets > 0 ? `Utiliser un ticket (${formatNumber(tickets)})` : `Disponible dans ${remaining(wait)}`) : state.wheelBusy ? "La roue tourne…" : "Faire tourner la roue";
-    return `<section class="page"><div class="section-head"><div><span class="eyebrow">ROUE DES POINTS</span><h2>Tente ta chance</h2><p>Chaque tour rapporte de l’XP. Un ticket permet de contourner le cooldown une fois.</p></div><span class="badge badge-yellow">🎟️ ${formatNumber(tickets)} ticket(s)</span></div>
+    const freeRemaining=Number(state.catalog?.wheel_free_spins_remaining || 0);
+    const freeTotal=Number(state.catalog?.wheel_free_spins_total || 1);
+    const usable = freeRemaining > 0 || tickets > 0;
+    const buttonText = state.wheelBusy ? "La roue tourne…" : freeRemaining > 0 ? `Tour gratuit (${freeRemaining}/${freeTotal})` : tickets > 0 ? `Utiliser un ticket (${formatNumber(tickets)})` : `Disponible dans ${remaining(wait)}`;
+    return `<section class="page"><div class="section-head"><div><span class="eyebrow">ROUE DES POINTS</span><h2>Tente ta chance</h2><p>Les tours gratuits se renouvellent toutes les 12 heures selon ton rang. Un ticket permet de rejouer avant la fin du délai.</p></div><div class="toolbar"><span class="badge badge-green">🎡 ${freeRemaining}/${freeTotal} gratuit(s)</span><span class="badge badge-yellow">🎟️ ${formatNumber(tickets)} ticket(s)</span></div></div>
       <div class="wheel-layout"><div class="wheel-stage"><div class="wheel-pointer"></div><div id="wheelDisk" class="wheel" style="background:conic-gradient(${gradient});transform:rotate(${state.wheelRotation}deg)">${labels}<div class="wheel-center">OS</div></div></div>
-      <article class="card"><h3>Gains possibles</h3><div class="admin-list">${rewards.map(r => `<div class="wallet-item"><div class="emoji-box">${escapeHtml(r.emoji)}</div><div><b>${escapeHtml(r.label)}</b><div class="wallet-meta">${formatNumber(r.points)} points</div></div></div>`).join("")}</div><button id="spinBtn" class="btn btn-primary btn-lg" ${!usable || state.wheelBusy ? "disabled" : ""}>${buttonText}</button></article></div>
+      <article class="card"><h3>Gains possibles</h3><div class="admin-list">${rewards.map(r => `<div class="wallet-item"><div class="emoji-box">${escapeHtml(r.emoji)}</div><div><b>${escapeHtml(r.label)}</b><div class="wallet-meta">${formatNumber(r.points)} points</div></div></div>`).join("")}</div><button id="spinBtn" class="btn btn-primary btn-lg" ${!usable || state.wheelBusy ? "disabled" : ""}>${buttonText}</button>${freeRemaining===0?`<p class="muted">Prochains tours gratuits dans ${remaining(wait)}.</p>`:""}</article></div>
     </section>`;
   }
+
 
   function itemQuantity(itemKey) {
     return Number((state.progression?.inventory || []).find(item => item.item_key === itemKey)?.quantity || 0);
@@ -430,17 +452,19 @@
       <p class="muted">XP total : ${formatNumber(p.xp_total || 0)}${p.active_title ? ` · Titre : ${escapeHtml(p.active_title.emoji)} ${escapeHtml(p.active_title.name)}` : ""}</p>
     </article>`;
   }
-
   function missionCard(mission) {
-    const ready = mission.completed && !mission.claimed;
-    const status = mission.claimed ? "Récompense récupérée" : ready ? "Mission terminée" : `${formatNumber(mission.progress)} / ${formatNumber(mission.target)}`;
-    return `<article class="mission-card ${mission.claimed ? "claimed" : ready ? "ready" : ""}">
-      <div class="mission-top"><span class="mission-scope">${mission.scope === "weekly" ? "HEBDOMADAIRE" : "CLASSIQUE"}</span><span>${status}</span></div>
+    const locked=mission.access_granted === false;
+    const required=rankInfo(mission.required_rank || "free");
+    const ready = !locked && mission.completed && !mission.claimed;
+    const status = locked ? `Réservée ${required.label}` : mission.claimed ? "Récompense récupérée" : ready ? "Mission terminée" : `${formatNumber(mission.progress)} / ${formatNumber(mission.target)}`;
+    return `<article class="mission-card ${locked ? "mission-locked" : mission.claimed ? "claimed" : ready ? "ready" : ""}">
+      <div class="mission-top"><span class="mission-scope">${mission.scope === "weekly" ? "HEBDOMADAIRE" : "CLASSIQUE"}</span><span class="badge ${required.className}">${required.emoji} ${required.label}</span><span>${status}</span></div>
       <h3>${escapeHtml(mission.title)}</h3><p>${escapeHtml(mission.description)}</p>
       <div class="progress-track small"><span style="width:${mission.percent}%"></span></div>
-      <div class="mission-reward"><span>🎁 ${formatNumber(mission.reward_points)} pts · ${formatNumber(mission.reward_xp)} XP${mission.reward_item_key ? ` · ${escapeHtml(mission.reward_item_key)}` : ""}</span><button class="btn btn-small ${ready ? "btn-green" : "btn-secondary"}" data-claim-mission="${escapeHtml(mission.id)}" ${ready ? "" : "disabled"}>${mission.claimed ? "Récupérée" : ready ? "Récupérer" : "En cours"}</button></div>
+      <div class="mission-reward"><span>🎁 ${formatNumber(mission.reward_points)} pts · ${formatNumber(mission.reward_xp)} XP${mission.reward_item_key ? ` · ${escapeHtml(mission.reward_item_key)}` : ""}</span><button class="btn btn-small ${ready ? "btn-green" : "btn-secondary"}" data-claim-mission="${escapeHtml(mission.id)}" ${ready ? "" : "disabled"}>${locked ? "Rang requis" : mission.claimed ? "Récupérée" : ready ? "Récupérer" : "En cours"}</button></div>
     </article>`;
   }
+
 
   function promoPage() {
     return `<section class="page">
@@ -595,7 +619,7 @@
         <div class="field"><label>Points</label><input id="newMissionPoints" class="input" type="number" min="0" value="150"></div>
         <div class="field"><label>XP</label><input id="newMissionXp" class="input" type="number" min="0" value="100"></div>
         <div class="field"><label>Objet offert</label><select id="newMissionItem" class="input">${itemRewardOptions("")}</select></div>
-        <div class="field"><label>Ordre</label><input id="newMissionOrder" class="input" type="number" value="100"></div>
+        <div class="field"><label>Ordre</label><input id="newMissionOrder" class="input" type="number" value="100"></div><div class="field"><label>Rang requis</label><select id="newMissionRank" class="input">${accessRankOptions("free")}</select></div>
       </div><div class="field" style="margin-top:12px"><label>Description</label><input id="newMissionDescription" class="input" placeholder="Description de la quête"></div><button id="createMissionBtn" class="btn btn-primary" style="margin-top:13px">Créer la quête</button></article>
 
       ${missions.map(mission => `<article class="admin-card">
@@ -608,7 +632,7 @@
           <div class="field"><label>Points</label><input id="mission-points-${mission.id}" class="input" type="number" min="0" value="${mission.reward_points}"></div>
           <div class="field"><label>XP</label><input id="mission-xp-${mission.id}" class="input" type="number" min="0" value="${mission.reward_xp}"></div>
           <div class="field"><label>Objet offert</label><select id="mission-item-${mission.id}" class="input">${itemRewardOptions(mission.reward_item_key || "")}</select></div>
-          <div class="field"><label>Ordre</label><input id="mission-order-${mission.id}" class="input" type="number" value="${mission.sort_order}"></div>
+          <div class="field"><label>Ordre</label><input id="mission-order-${mission.id}" class="input" type="number" value="${mission.sort_order}"></div><div class="field"><label>Rang requis</label><select id="mission-rank-${mission.id}" class="input">${accessRankOptions(mission.required_rank || "free")}</select></div>
           <label class="check-row"><input id="mission-active-${mission.id}" type="checkbox" ${mission.active ? "checked" : ""}> Quête active</label>
         </div>
         <div class="field" style="margin-top:12px"><label>Description</label><textarea id="mission-description-${mission.id}" class="textarea" style="min-height:90px">${escapeHtml(mission.description || "")}</textarea></div>
@@ -637,12 +661,14 @@
     if (state.adminTab === "history") return adminHistory();
     return adminSettings();
   }
-
   function adminServices() {
     const items = state.admin.services || [];
-    return `<div class="admin-list">${items.map(s => `<article class="admin-card"><div class="form-grid"><div class="field"><label>Nom</label><input class="input" id="svc-name-${s.id}" value="${escapeHtml(s.name)}"></div><div class="field"><label>Emoji</label><input class="input" id="svc-emoji-${s.id}" value="${escapeHtml(s.emoji)}"></div><div class="field"><label>Cooldown (secondes)</label><input class="input" type="number" min="0" id="svc-cooldown-${s.id}" value="${s.cooldown_seconds}"></div><div class="field"><label>Stock actuel</label><input class="input" value="${s.stock}" disabled></div></div><div class="field" style="margin-top:12px"><label>Description</label><input class="input" id="svc-desc-${s.id}" value="${escapeHtml(s.description || "")}"></div><div class="field" style="margin-top:12px"><label>Réalimenter — une ligne par ligne</label><textarea class="textarea" id="svc-lines-${s.id}" placeholder="ligne 1\nligne 2\nligne 3"></textarea></div><div class="admin-actions"><button class="btn btn-primary btn-small" data-save-service="${s.id}">Enregistrer</button><button class="btn btn-green btn-small" data-restock-service="${s.id}">Ajouter les lignes</button><button class="btn btn-secondary btn-small" data-toggle-service="${s.id}" data-enabled="${s.enabled ? 1 : 0}">${s.enabled ? "Désactiver" : "Activer"}</button><button class="btn btn-red btn-small" data-clear-service="${s.id}">Vider le stock</button><button class="btn btn-red btn-small" data-delete-service="${s.id}">Supprimer</button></div></article>`).join("")}
-      <article class="admin-card"><h3>Ajouter un service</h3><div class="form-grid"><div class="field"><label>Nom</label><input id="newSvcName" class="input" placeholder="Nom du service"></div><div class="field"><label>Emoji</label><input id="newSvcEmoji" class="input" value="⚡"></div><div class="field"><label>Cooldown</label><input id="newSvcCooldown" class="input" type="number" value="10"></div><div class="field"><label>Description</label><input id="newSvcDesc" class="input" placeholder="Description"></div></div><button id="addServiceBtn" class="btn btn-primary" style="margin-top:13px">Ajouter le service</button></article></div>`;
+    return `<div class="admin-list">${items.map(s => `<article class="admin-card"><div class="form-grid"><div class="field"><label>Nom</label><input class="input" id="svc-name-${s.id}" value="${escapeHtml(s.name)}"></div><div class="field"><label>Emoji</label><input class="input" id="svc-emoji-${s.id}" value="${escapeHtml(s.emoji)}"></div><div class="field"><label>Rang minimum</label><select class="input" id="svc-rank-${s.id}">${accessRankOptions(s.required_rank || "free")}</select></div><div class="field"><label>Stock actuel</label><input class="input" value="${s.stock}" disabled></div></div><div class="field" style="margin-top:12px"><label>Description</label><input class="input" id="svc-desc-${s.id}" value="${escapeHtml(s.description || "")}"></div><div class="field" style="margin-top:12px"><label>Réalimenter — une ligne par ligne</label><textarea class="textarea" id="svc-lines-${s.id}" placeholder="ligne 1
+  ligne 2
+  ligne 3"></textarea></div><div class="admin-actions"><button class="btn btn-primary btn-small" data-save-service="${s.id}">Enregistrer</button><button class="btn btn-green btn-small" data-restock-service="${s.id}">Ajouter les lignes</button><button class="btn btn-secondary btn-small" data-toggle-service="${s.id}" data-enabled="${s.enabled ? 1 : 0}">${s.enabled ? "Désactiver" : "Activer"}</button><button class="btn btn-red btn-small" data-clear-service="${s.id}">Vider le stock</button><button class="btn btn-red btn-small" data-delete-service="${s.id}">Supprimer</button></div></article>`).join("")}
+      <article class="admin-card"><h3>Ajouter un service</h3><div class="form-grid"><div class="field"><label>Nom</label><input id="newSvcName" class="input" placeholder="Nom du service"></div><div class="field"><label>Emoji</label><input id="newSvcEmoji" class="input" value="⚡"></div><div class="field"><label>Rang minimum</label><select id="newSvcRank" class="input">${accessRankOptions("free")}</select></div><div class="field"><label>Description</label><input id="newSvcDesc" class="input" placeholder="Description"></div></div><button id="addServiceBtn" class="btn btn-primary" style="margin-top:13px">Ajouter le service</button></article></div>`;
   }
+
 
   function adminProducts() {
     const items = state.admin.products || [];
@@ -655,45 +681,29 @@
     return `<div class="admin-list">${items.map(r => `<article class="admin-card"><div class="form-grid"><div class="field"><label>Emoji</label><input class="input" id="wheel-emoji-${r.id}" value="${escapeHtml(r.emoji)}"></div><div class="field"><label>Nom du gain</label><input class="input" id="wheel-label-${r.id}" value="${escapeHtml(r.label)}"></div><div class="field"><label>Points</label><input class="input" type="number" min="0" id="wheel-points-${r.id}" value="${r.points}"></div><div class="field"><label>Poids / chance</label><input class="input" type="number" min="1" id="wheel-weight-${r.id}" value="${r.weight}"></div></div><div class="admin-actions"><button class="btn btn-primary btn-small" data-save-wheel="${r.id}">Enregistrer</button><button class="btn btn-red btn-small" data-delete-wheel="${r.id}">Supprimer</button></div></article>`).join("")}
       <article class="admin-card"><h3>Ajouter un gain</h3><div class="form-grid"><div class="field"><label>Emoji</label><input id="newWheelEmoji" class="input" value="🎁"></div><div class="field"><label>Nom</label><input id="newWheelLabel" class="input" value="Nouveau gain"></div><div class="field"><label>Points</label><input id="newWheelPoints" class="input" type="number" value="100"></div><div class="field"><label>Poids</label><input id="newWheelWeight" class="input" type="number" value="1"></div></div><button id="addWheelBtn" class="btn btn-primary" style="margin-top:13px">Ajouter à la roue</button></article></div>`;
   }
-
   function adminUsers() {
     const users = state.admin.users || [];
     const apiVersion = escapeHtml(state.admin.api_version || "version inconnue");
     return `<div class="admin-list">
-      <article class="admin-card">
-        <h3>⚙️ Limites par utilisateur</h3>
-        <p class="muted">Réglages par défaut : <b>15 minutes</b> entre deux générations et <b>6 générations par jour</b>. Le cooldown et la limite sont liés à l’ID Discord, sans bloquer les autres utilisateurs. Mets <b>0 génération/jour</b> pour un accès illimité.</p>
-        <div class="form-grid">
-          <div class="field"><label>ID Discord</label><input id="directUserCooldownId" class="input" inputmode="numeric" placeholder="123456789012345678"></div>
-          <div class="field"><label>Temps de génération (minutes)</label><input id="directUserCooldownMinutes" class="input" type="number" min="0" max="525600" step="1" value="15"></div>
-          <div class="field"><label>Générations par jour</label><input id="directUserDailyLimit" class="input" type="number" min="0" max="100000" step="1" value="6"></div>
-        </div>
-        <div class="admin-actions">
-          <button id="saveDirectUserCooldownBtn" class="btn btn-primary">Enregistrer le temps</button>
-          <button id="saveDirectUserDailyLimitBtn" class="btn btn-green">Enregistrer la limite/jour</button>
-          <span class="muted">API : ${apiVersion}</span>
-        </div>
-      </article>
+      <article class="admin-card"><h3>👥 Rangs automatiques</h3><p class="muted">Free : 6 générations/jour, 15 min, 1 roue. Boost : 15/jour, 2 min, 2 roues, quotidien +20 %. VIP : illimité, 1 min, 3 roues, quotidien +50 %. Admin possède les accès VIP et le panel.</p><span class="muted">API : ${apiVersion}</span></article>
       ${users.length ? users.map(u => {
-        const seconds = Number.isFinite(Number(u.generation_cooldown_seconds)) ? Number(u.generation_cooldown_seconds) : 900;
-        const minutes = Math.max(0, seconds / 60);
-        const dailyLimit = Number.isFinite(Number(u.daily_generation_limit)) ? Math.max(0, Number(u.daily_generation_limit)) : 6;
-        const today = Math.max(0, Number(u.generations_today || 0));
-        const quotaLabel = dailyLimit === 0 ? `${formatNumber(today)} aujourd’hui · illimité` : `${formatNumber(today)} / ${formatNumber(dailyLimit)} aujourd’hui`;
-        return `<article class="admin-card">
-          <div class="section-head" style="margin-bottom:12px"><div><h3>${escapeHtml(u.display_name || u.username)}</h3><p class="muted">@${escapeHtml(u.username || "inconnu")} · ID ${escapeHtml(u.discord_id)}</p></div><span class="badge badge-green">${quotaLabel}</span></div>
+        const rank=rankInfo(u.account_rank);
+        const dailyLimit=Number(u.daily_generation_limit);
+        const today=Math.max(0,Number(u.generations_today || 0));
+        const quotaLabel=dailyLimit===0?`${formatNumber(today)} aujourd’hui · illimité`:`${formatNumber(today)} / ${formatNumber(dailyLimit)} aujourd’hui`;
+        return `<article class="admin-card"><div class="section-head" style="margin-bottom:12px"><div><h3>${escapeHtml(u.display_name || u.username)}</h3><p class="muted">@${escapeHtml(u.username || "inconnu")} · ID ${escapeHtml(u.discord_id)}</p></div><span class="rank-badge ${rank.className}">${rank.emoji} ${rank.label}</span></div>
           <div class="form-grid">
+            <div class="field"><label>Rang du membre</label><div class="toolbar"><select class="input" id="user-rank-${u.discord_id}">${rankOptions(u.account_rank)}</select><button class="btn btn-primary btn-small" data-user-rank="${u.discord_id}">Appliquer</button></div></div>
             <div class="field"><label>Points</label><div class="toolbar"><input class="input" type="number" id="user-points-${u.discord_id}" value="100"><button class="btn btn-green btn-small" data-user-points="${u.discord_id}">Ajuster</button></div></div>
-            <div class="field"><label>Temps gen (minutes)</label><div class="toolbar"><input class="input" type="number" min="0" max="525600" step="1" id="user-gen-time-${u.discord_id}" value="${escapeHtml(minutes)}"><button class="btn btn-primary btn-small" data-user-gen-time="${u.discord_id}">Enregistrer</button></div></div>
-            <div class="field"><label>Générations par jour (0 = illimité)</label><div class="toolbar"><input class="input" type="number" min="0" max="100000" step="1" id="user-daily-limit-${u.discord_id}" value="${escapeHtml(dailyLimit)}"><button class="btn btn-primary btn-small" data-user-daily-limit="${u.discord_id}">Enregistrer</button></div></div>
-            <div class="field"><label>Générations totales</label><input class="input" value="${formatNumber(u.generations)}" disabled></div>
-            <div class="field"><label>Achats boutique</label><input class="input" value="${formatNumber(u.purchases)}" disabled></div>
+            <div class="field"><label>Limites automatiques</label><input class="input" value="${quotaLabel} · cooldown ${remaining(u.generation_cooldown_seconds)}" disabled></div>
+            <div class="field"><label>Tours gratuits / 12 h</label><input class="input" value="${formatNumber(u.rank?.wheel_free_spins || 1)}" disabled></div>
+            <div class="field"><label>Bonus quotidien</label><input class="input" value="+${Math.round(((u.rank?.daily_reward_multiplier || 1)-1)*100)} %" disabled></div>
             <div class="field"><label>Timer actif</label><button class="btn btn-secondary" data-open-user-timer="${u.discord_id}">Voir / réinitialiser</button></div>
-          </div>
-        </article>`;
+          </div></article>`;
       }).join("") : `<article class="admin-card"><div class="empty">Aucun utilisateur enregistré.</div></article>`}
     </div>`;
   }
+
 
   function timerRemainingAt(timestamp) {
     return remaining(Math.max(0, Math.ceil((Number(timestamp || 0) - Date.now()) / 1000)));
@@ -758,9 +768,10 @@
 
   function adminSettings() {
     const settings = state.admin.settings || {};
-    return `<div class="admin-list"><article class="admin-card"><h3>Réglages globaux</h3><div class="form-grid"><div class="field"><label>Temps gen par défaut (minutes)</label><input id="settingDefaultGenCooldown" class="input" type="number" min="0" value="${escapeHtml(Number(settings.default_generation_cooldown_seconds || 900) / 60)}"></div><div class="field"><label>Générations/jour par défaut</label><input id="settingDefaultDailyLimit" class="input" type="number" min="0" max="100000" value="${escapeHtml(settings.default_daily_generation_limit ?? 6)}"></div><div class="field"><label>Cooldown roue (secondes)</label><input id="settingWheelCooldown" class="input" type="number" min="0" value="${escapeHtml(settings.wheel_cooldown_seconds || 3600)}"></div><div class="field"><label>Points de départ</label><input id="settingStartPoints" class="input" type="number" min="0" value="${escapeHtml(settings.starting_points || 500)}"></div></div></article>
+    return `<div class="admin-list">
+      <article class="admin-card"><h3>🛡️ Limites automatiques par rang</h3><p class="muted">Les quotas et cooldowns ne sont plus modifiables manuellement : Free = 6/jour et 15 min · Boost = 15/jour et 2 min · VIP/Admin = illimité et 1 min. La roue se recharge toutes les 12 heures avec 1, 2 ou 3 tours gratuits selon le rang.</p><div class="form-grid"><div class="field"><label>Cycle de la roue</label><input class="input" value="12 heures (fixe)" disabled></div><div class="field"><label>Points de départ</label><input id="settingStartPoints" class="input" type="number" min="0" value="${escapeHtml(settings.starting_points || 500)}"></div></div></article>
       <article class="admin-card"><h3>⭐ Récompenses XP</h3><div class="form-grid"><div class="field"><label>XP par génération</label><input id="settingXpGeneration" class="input" type="number" min="0" value="${escapeHtml(settings.xp_generation ?? 20)}"></div><div class="field"><label>XP par achat</label><input id="settingXpPurchase" class="input" type="number" min="0" value="${escapeHtml(settings.xp_purchase ?? 35)}"></div><div class="field"><label>XP par roue</label><input id="settingXpWheel" class="input" type="number" min="0" value="${escapeHtml(settings.xp_wheel ?? 15)}"></div><div class="field"><label>XP ouverture coffre</label><input id="settingXpChest" class="input" type="number" min="0" value="${escapeHtml(settings.xp_chest ?? 25)}"></div><div class="field"><label>Points quotidiens de base</label><input id="settingDailyPoints" class="input" type="number" min="0" value="${escapeHtml(settings.daily_base_points ?? 50)}"></div><div class="field"><label>XP quotidienne de base</label><input id="settingDailyXp" class="input" type="number" min="0" value="${escapeHtml(settings.daily_base_xp ?? 30)}"></div></div></article>
-      <button id="saveSettingsBtn" class="btn btn-primary">Enregistrer tous les réglages</button><p class="muted">Les boosts XP sont appliqués automatiquement côté serveur. Les récompenses et probabilités des coffres sont sécurisées dans le Worker.</p></div>`;
+      <button id="saveSettingsBtn" class="btn btn-primary">Enregistrer les récompenses</button><p class="muted">Les bonus Boost (+20 %) et VIP/Admin (+50 %) sont appliqués automatiquement côté serveur.</p></div>`;
   }
 
   function render() {
@@ -938,7 +949,7 @@
 
   async function handleAdminAction(target) {
     const id = target.dataset.saveService || target.dataset.restockService || target.dataset.clearService || target.dataset.deleteService || target.dataset.toggleService;
-    if (target.dataset.saveService) return adminRequest(`/api/admin/services/${id}`, "PUT", {name:$(`#svc-name-${id}`).value,emoji:$(`#svc-emoji-${id}`).value,description:$(`#svc-desc-${id}`).value,cooldown_seconds:Number($(`#svc-cooldown-${id}`).value),enabled:true}, "Service enregistré.");
+    if (target.dataset.saveService) return adminRequest(`/api/admin/services/${id}`, "PUT", {name:$(`#svc-name-${id}`).value,emoji:$(`#svc-emoji-${id}`).value,description:$(`#svc-desc-${id}`).value,required_rank:$(`#svc-rank-${id}`).value,enabled:true}, "Service enregistré.");
     if (target.dataset.restockService) return adminRequest(`/api/admin/services/${id}/restock`, "POST", {lines:linesFromTextarea(`#svc-lines-${id}`)}, "Stock du générateur réalimenté.");
     if (target.dataset.clearService) return confirm("Vider tout le stock de ce service ?") && adminRequest(`/api/admin/services/${id}/stock`, "DELETE", undefined, "Stock vidé.");
     if (target.dataset.deleteService) return confirm("Supprimer ce service et son stock ?") && adminRequest(`/api/admin/services/${id}`, "DELETE", undefined, "Service supprimé.");
@@ -988,25 +999,15 @@
         reward_xp:Number(document.getElementById(`mission-xp-${mid}`).value),
         reward_item_key:document.getElementById(`mission-item-${mid}`).value || null,
         sort_order:Number(document.getElementById(`mission-order-${mid}`).value),
+        required_rank:document.getElementById(`mission-rank-${mid}`).value,
         active:document.getElementById(`mission-active-${mid}`).checked
       }, "Quête enregistrée.");
     }
     if (target.dataset.resetMission) return confirm("Réinitialiser la progression de cette quête pour tous les membres ?") && adminRequest(`/api/admin/missions/${encodeURIComponent(target.dataset.resetMission)}/reset`, "POST", {}, "Progressions de la quête réinitialisées.");
     if (target.dataset.deleteMission) return confirm("Supprimer définitivement cette quête et toutes ses progressions ?") && adminRequest(`/api/admin/missions/${encodeURIComponent(target.dataset.deleteMission)}`, "DELETE", undefined, "Quête supprimée.");
 
+    if (target.dataset.userRank) { const discordId=target.dataset.userRank; return adminRequest(`/api/admin/users/${encodeURIComponent(discordId)}/rank`, "PUT", {rank:$(`#user-rank-${discordId}`).value}, "Rang utilisateur enregistré."); }
     if (target.dataset.userPoints) return adminRequest(`/api/admin/users/${target.dataset.userPoints}/points`, "POST", {delta:Number($(`#user-points-${target.dataset.userPoints}`).value)}, "Points ajustés.");
-    if (target.dataset.userGenTime) {
-      const discordId = target.dataset.userGenTime;
-      const minutes = Number($(`#user-gen-time-${discordId}`).value);
-      if (!Number.isFinite(minutes) || minutes < 0) return showToast("Entre une durée valide en minutes.", true);
-      return adminRequest(`/api/admin/users/${encodeURIComponent(discordId)}/generation-cooldown`, "PUT", {minutes}, "Temps de génération enregistré.");
-    }
-    if (target.dataset.userDailyLimit) {
-      const discordId = target.dataset.userDailyLimit;
-      const limit = Number($(`#user-daily-limit-${discordId}`).value);
-      if (!Number.isInteger(limit) || limit < 0 || limit > 100000) return showToast("Entre une limite entière entre 0 et 100 000.", true);
-      return adminRequest(`/api/admin/users/${encodeURIComponent(discordId)}/generation-limit`, "PUT", {limit}, "Limite journalière enregistrée.");
-    }
   }
 
   async function saveUserTimer({discordId, type, serviceId, seconds}) {
@@ -1063,22 +1064,6 @@
       if (input) input.value = openTimer.dataset.openUserTimer;
       return;
     }
-    if (event.target.id === "saveDirectUserCooldownBtn") {
-      const discordId = String($("#directUserCooldownId")?.value || "").trim();
-      const minutes = Number($("#directUserCooldownMinutes")?.value);
-      if (!/^\d{5,30}$/.test(discordId)) { showToast("Entre un ID Discord valide.", true); return; }
-      if (!Number.isFinite(minutes) || minutes < 0) { showToast("Entre une durée valide en minutes.", true); return; }
-      await adminRequest(`/api/admin/users/${encodeURIComponent(discordId)}/generation-cooldown`, "PUT", {minutes}, "Temps de génération enregistré pour cet utilisateur.");
-      return;
-    }
-    if (event.target.id === "saveDirectUserDailyLimitBtn") {
-      const discordId = String($("#directUserCooldownId")?.value || "").trim();
-      const limit = Number($("#directUserDailyLimit")?.value);
-      if (!/^\d{5,30}$/.test(discordId)) { showToast("Entre un ID Discord valide.", true); return; }
-      if (!Number.isInteger(limit) || limit < 0 || limit > 100000) { showToast("Entre une limite entière entre 0 et 100 000.", true); return; }
-      await adminRequest(`/api/admin/users/${encodeURIComponent(discordId)}/generation-limit`, "PUT", {limit}, "Limite journalière enregistrée pour cet utilisateur.");
-      return;
-    }
     const supportLink = event.target.closest("[data-support-link]");
     if (supportLink) {
       showToast("Ajoute DISCORD_URL dans frontend/config.js pour ouvrir ton serveur Discord.", true);
@@ -1089,7 +1074,7 @@
       await saveUserTimer({discordId:resetTimer.dataset.timerUser,type:resetTimer.dataset.timerType,serviceId:resetTimer.dataset.timerService || "",seconds:0});
       return;
     }
-    const adminAction = event.target.closest("[data-save-service],[data-restock-service],[data-clear-service],[data-delete-service],[data-toggle-service],[data-save-product],[data-restock-product],[data-clear-product],[data-delete-product],[data-toggle-product],[data-save-wheel],[data-delete-wheel],[data-save-community-event],[data-reset-community-event],[data-delete-community-event],[data-save-mission],[data-reset-mission],[data-delete-mission],[data-user-points],[data-user-gen-time],[data-user-daily-limit]");
+    const adminAction = event.target.closest("[data-save-service],[data-restock-service],[data-clear-service],[data-delete-service],[data-toggle-service],[data-save-product],[data-restock-product],[data-clear-product],[data-delete-product],[data-toggle-product],[data-save-wheel],[data-delete-wheel],[data-save-community-event],[data-reset-community-event],[data-delete-community-event],[data-save-mission],[data-reset-mission],[data-delete-mission],[data-user-rank],[data-user-points]");
     if (adminAction) { await handleAdminAction(adminAction); return; }
     if (event.target.id === "applyUserTimerBtn") {
       await saveUserTimer({discordId:$("#timerDiscordId").value,type:$("#timerType").value,serviceId:$("#timerService").value,seconds:$("#timerSeconds").value});
@@ -1102,13 +1087,13 @@
       await adminRequest("/api/admin/community-events", "POST", {title:$("#newEventTitle").value,emoji:$("#newEventEmoji").value,description:$("#newEventDescription").value,activity_type:$("#newEventActivity").value,target:Number($("#newEventTarget").value),reward_points:Number($("#newEventPoints").value),reward_xp:Number($("#newEventXp").value),reward_item_key:$("#newEventItem").value||null,ends_at:Date.now()+days*86400000}, "Événement créé."); return;
     }
     if (event.target.id === "createMissionBtn") {
-      await adminRequest("/api/admin/missions", "POST", {title:$("#newMissionTitle").value,scope:$("#newMissionScope").value,description:$("#newMissionDescription").value,activity_type:$("#newMissionActivity").value,target:Number($("#newMissionTarget").value),reward_points:Number($("#newMissionPoints").value),reward_xp:Number($("#newMissionXp").value),reward_item_key:$("#newMissionItem").value||null,sort_order:Number($("#newMissionOrder").value),active:true}, "Quête créée."); return;
+      await adminRequest("/api/admin/missions", "POST", {title:$("#newMissionTitle").value,scope:$("#newMissionScope").value,description:$("#newMissionDescription").value,activity_type:$("#newMissionActivity").value,target:Number($("#newMissionTarget").value),reward_points:Number($("#newMissionPoints").value),reward_xp:Number($("#newMissionXp").value),reward_item_key:$("#newMissionItem").value||null,sort_order:Number($("#newMissionOrder").value),required_rank:$("#newMissionRank").value,active:true}, "Quête créée."); return;
     }
     if (event.target.id === "createPromoCodeBtn") {
       await adminRequest("/api/admin/promo-codes", "POST", {code:$("#newPromoCode").value,description:$("#newPromoDescription").value,max_uses:Number($("#newPromoUses").value),reward_points:Number($("#newPromoPoints").value),reward_xp:Number($("#newPromoXp").value),reward_item_key:String($("#newPromoItem").value||"").trim()||null}, "Code promo créé."); return;
     }
     if (event.target.id === "addServiceBtn") {
-      await adminRequest("/api/admin/services", "POST", {name:$("#newSvcName").value,emoji:$("#newSvcEmoji").value,description:$("#newSvcDesc").value,cooldown_seconds:Number($("#newSvcCooldown").value)}, "Service ajouté."); return;
+      await adminRequest("/api/admin/services", "POST", {name:$("#newSvcName").value,emoji:$("#newSvcEmoji").value,description:$("#newSvcDesc").value,required_rank:$("#newSvcRank").value}, "Service ajouté."); return;
     }
     if (event.target.id === "addProductBtn") {
       await adminRequest("/api/admin/products", "POST", {name:$("#newProdName").value,emoji:$("#newProdEmoji").value,description:$("#newProdDesc").value,price:Number($("#newProdPrice").value)}, "Récompense ajoutée."); return;
@@ -1117,7 +1102,7 @@
       await adminRequest("/api/admin/wheel", "POST", {emoji:$("#newWheelEmoji").value,label:$("#newWheelLabel").value,points:Number($("#newWheelPoints").value),weight:Number($("#newWheelWeight").value)}, "Gain ajouté."); return;
     }
     if (event.target.id === "saveSettingsBtn") {
-      await adminRequest("/api/admin/settings", "PUT", {default_generation_cooldown_minutes:Number($("#settingDefaultGenCooldown").value),default_daily_generation_limit:Number($("#settingDefaultDailyLimit").value),wheel_cooldown_seconds:Number($("#settingWheelCooldown").value),starting_points:Number($("#settingStartPoints").value),xp_generation:Number($("#settingXpGeneration").value),xp_purchase:Number($("#settingXpPurchase").value),xp_wheel:Number($("#settingXpWheel").value),xp_chest:Number($("#settingXpChest").value),daily_base_points:Number($("#settingDailyPoints").value),daily_base_xp:Number($("#settingDailyXp").value)}, "Réglages enregistrés."); return;
+      await adminRequest("/api/admin/settings", "PUT", {wheel_cooldown_seconds:43200,starting_points:Number($("#settingStartPoints").value),xp_generation:Number($("#settingXpGeneration").value),xp_purchase:Number($("#settingXpPurchase").value),xp_wheel:Number($("#settingXpWheel").value),xp_chest:Number($("#settingXpChest").value),daily_base_points:Number($("#settingDailyPoints").value),daily_base_xp:Number($("#settingDailyXp").value)}, "Réglages enregistrés."); return;
     }
   });
 
@@ -1157,7 +1142,7 @@
   async function init() {
     try {
       if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("./sw.js?v=20260713-v75", {updateViaCache:"none"})
+        navigator.serviceWorker.register("./sw.js?v=20260713-v76", {updateViaCache:"none"})
           .then(registration => registration.update())
           .catch(error => console.warn("Service Worker:", error));
       }

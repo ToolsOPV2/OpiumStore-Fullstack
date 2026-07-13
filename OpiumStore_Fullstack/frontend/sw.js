@@ -1,12 +1,12 @@
-const CACHE_NAME = "opiumstore-v75";
-const OFFLINE_URL = "./index.html?v=20260713-v75";
+const CACHE_NAME = "opiumstore-v76";
+const OFFLINE_URL = "./index.html?v=20260713-v76";
 const APP_SHELL = [
   OFFLINE_URL,
-  "./styles.css?v=20260713-v75",
-  "./progression.css?v=20260713-v75",
-  "./app.js?v=20260713-v75",
-  "./config.js?v=20260713-v75",
-  "./manifest.webmanifest?v=20260713-v75",
+  "./styles.css?v=20260713-v76",
+  "./progression.css?v=20260713-v76",
+  "./app.js?v=20260713-v76",
+  "./config.js?v=20260713-v76",
+  "./manifest.webmanifest?v=20260713-v76",
   "./assets/logo.png",
   "./assets/icon-192.png",
   "./assets/icon-512.png"

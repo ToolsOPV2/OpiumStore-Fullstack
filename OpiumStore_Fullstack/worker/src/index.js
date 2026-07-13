@@ -2,13 +2,21 @@ const DISCORD_API = "https://discord.com/api/v10";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const LOGIN_CODE_TTL_MS = 2 * 60 * 1000;
 const OAUTH_STATE_TTL_SECONDS = 600;
+const RANK_ORDER = Object.freeze({free:0, boost:1, vip:2, admin:3});
+const RANK_RULES = Object.freeze({
+  free:{key:"free",label:"Free",emoji:"🆓",daily_generation_limit:6,generation_cooldown_seconds:900,wheel_free_spins:1,daily_reward_multiplier:1},
+  boost:{key:"boost",label:"Boost",emoji:"🚀",daily_generation_limit:15,generation_cooldown_seconds:120,wheel_free_spins:2,daily_reward_multiplier:1.2},
+  vip:{key:"vip",label:"VIP",emoji:"👑",daily_generation_limit:0,generation_cooldown_seconds:60,wheel_free_spins:3,daily_reward_multiplier:1.5},
+  admin:{key:"admin",label:"Admin",emoji:"🛡️",daily_generation_limit:0,generation_cooldown_seconds:60,wheel_free_spins:3,daily_reward_multiplier:1.5}
+});
 
-// Coffres virtuels de la Boutique points : stock illimité, aucun product_line requis.
+// Produits virtuels de la Boutique points : stock illimité, aucune ligne produit requise.
 const POINT_SHOP_CHESTS = [
-  {id:"points-chest-common",item_key:"chest_common",rarity:"common",name:"Coffre commun",emoji:"📦",price:250,description:"Stock illimité · jusqu’à 119 points et 69 XP."},
-  {id:"points-chest-rare",item_key:"chest_rare",rarity:"rare",name:"Coffre rare",emoji:"🔷",price:750,description:"Stock illimité · jusqu’à 399 points et 199 XP."},
-  {id:"points-chest-epic",item_key:"chest_epic",rarity:"epic",name:"Coffre épique",emoji:"🟣",price:1500,description:"Stock illimité · jusqu’à 699 points et 400 XP."},
-  {id:"points-chest-legendary",item_key:"chest_legendary",rarity:"legendary",name:"Coffre légendaire",emoji:"🟡",price:3000,description:"Stock illimité · jusqu’à 1 499 points et 700 XP."}
+  {id:"points-wheel-ticket",item_key:"wheel_ticket",item_type:"ticket",rarity:"rare",name:"Ticket de roue",emoji:"🎟️",price:250,description:"Stock illimité · permet de tourner la roue avant la fin du délai."},
+  {id:"points-chest-common",item_key:"chest_common",item_type:"chest",rarity:"common",name:"Coffre commun",emoji:"📦",price:250,description:"Stock illimité · jusqu’à 119 points et 69 XP."},
+  {id:"points-chest-rare",item_key:"chest_rare",item_type:"chest",rarity:"rare",name:"Coffre rare",emoji:"🔷",price:750,description:"Stock illimité · jusqu’à 399 points et 199 XP."},
+  {id:"points-chest-epic",item_key:"chest_epic",item_type:"chest",rarity:"epic",name:"Coffre épique",emoji:"🟣",price:1500,description:"Stock illimité · jusqu’à 699 points et 400 XP."},
+  {id:"points-chest-legendary",item_key:"chest_legendary",item_type:"chest",rarity:"legendary",name:"Coffre légendaire",emoji:"🟡",price:3000,description:"Stock illimité · jusqu’à 1 499 points et 700 XP."}
 ];
 
 export default {
@@ -18,7 +26,7 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
-      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"progression-v7.3"}, 200, env, request);
+      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"progression-v7.6"}, 200, env, request);
       if (path === "/auth/discord/start" && request.method === "GET") return await startDiscordAuth(env);
       if (path === "/auth/discord/callback" && request.method === "GET") return await discordCallback(request, env);
       if (path === "/auth/exchange" && request.method === "POST") return await exchangeLoginCode(request, env);
@@ -164,7 +172,48 @@ function adminIds(env) {
   return new Set(String(env.ADMIN_DISCORD_IDS || "").split(",").map(x => x.trim()).filter(Boolean));
 }
 
+function normalizeRank(value) {
+  const rank = String(value || "free").trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(RANK_RULES, rank) ? rank : "free";
+}
+
+function normalizeAccessRank(value) {
+  const rank = normalizeRank(value);
+  return rank === "boost" || rank === "vip" ? rank : "free";
+}
+
+function effectiveRank(user, env) {
+  if (adminIds(env).has(String(user?.discord_id || ""))) return "admin";
+  return normalizeRank(user?.account_rank || user?.rank || "free");
+}
+
+function rankRules(user, env) {
+  return RANK_RULES[effectiveRank(user, env)];
+}
+
+function rankAllows(currentRank, requiredRank) {
+  return Number(RANK_ORDER[normalizeRank(currentRank)] || 0) >= Number(RANK_ORDER[normalizeRank(requiredRank)] || 0);
+}
+
+async function loadUserRank(user, env) {
+  if (adminIds(env).has(String(user?.discord_id || ""))) return "admin";
+  const row = await env.DB.prepare("SELECT rank FROM user_ranks WHERE user_id=?").bind(user.id).first();
+  return normalizeRank(row?.rank || "free");
+}
+
+function publicRank(user, env) {
+  const rules = rankRules(user, env);
+  return {
+    key:rules.key,label:rules.label,emoji:rules.emoji,
+    daily_generation_limit:rules.daily_generation_limit,
+    generation_cooldown_seconds:rules.generation_cooldown_seconds,
+    wheel_free_spins:rules.wheel_free_spins,
+    daily_reward_multiplier:rules.daily_reward_multiplier
+  };
+}
+
 function publicUser(user, env) {
+  const rank = publicRank(user, env);
   return {
     discord_id:user.discord_id,
     username:user.username,
@@ -173,7 +222,9 @@ function publicUser(user, env) {
     points:Number(user.points),
     total_earned:Number(user.total_earned),
     total_spent:Number(user.total_spent),
-    is_admin:adminIds(env).has(user.discord_id)
+    rank,
+    account_rank:rank.key,
+    is_admin:rank.key === "admin"
   };
 }
 
@@ -211,6 +262,7 @@ async function discordCallback(request, env) {
     ON CONFLICT(discord_id) DO UPDATE SET username=excluded.username,global_name=excluded.global_name,avatar=excluded.avatar,updated_at=excluded.updated_at`)
     .bind(discord.id, discord.username, discord.global_name || null, discord.avatar || null, startingPoints, startingPoints, now, now).run();
   const user = await env.DB.prepare("SELECT * FROM users WHERE discord_id=?").bind(discord.id).first();
+  await env.DB.prepare("INSERT OR IGNORE INTO user_ranks(user_id,rank,updated_at) VALUES(?,'free',?)").bind(user.id,now).run();
   const rawCode = randomToken(32);
   await env.DB.prepare("INSERT INTO login_codes(code_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)").bind(await sha256(rawCode), user.id, now + LOGIN_CODE_TTL_MS, now).run();
   return redirect(`${env.FRONTEND_ORIGIN}/#auth_code=${encodeURIComponent(rawCode)}`, clearCookie);
@@ -236,11 +288,12 @@ async function requireUser(request, env) {
   const token = auth.slice(7).trim();
   const row = await env.DB.prepare(`SELECT u.*,s.id AS session_id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?`).bind(await sha256(token), Date.now()).first();
   if (!row) throw httpError(401, "Session invalide ou expirée.");
+  row.account_rank = await loadUserRank(row, env);
   return row;
 }
 
 function requireAdmin(user, env) {
-  if (!adminIds(env).has(user.discord_id)) throw httpError(403, "Accès administrateur requis.");
+  if (effectiveRank(user, env) !== "admin") throw httpError(403, "Accès administrateur requis.");
 }
 
 async function logout(request, user, env) {
@@ -255,12 +308,17 @@ async function setting(env, key, fallback) {
 
 async function getCatalog(user, env, request) {
   const now = Date.now();
-  const services = await env.DB.prepare(`SELECT s.id,s.name,s.emoji,s.description,s.cooldown_seconds,s.enabled,COUNT(i.id) AS stock,MAX(0,COALESCE(c.next_allowed_at,0)-?) AS cooldown_ms
-    FROM services s LEFT JOIN inventory_lines i ON i.service_id=s.id LEFT JOIN generator_cooldowns c ON c.user_id=? AND c.service_id=s.id
+  const currentRank = effectiveRank(user,env);
+  const services = await env.DB.prepare(`SELECT s.id,s.name,s.emoji,s.description,s.cooldown_seconds,s.enabled,
+    COALESCE(sa.required_rank,'free') AS required_rank,COUNT(i.id) AS stock,MAX(0,COALESCE(c.next_allowed_at,0)-?) AS cooldown_ms
+    FROM services s
+    LEFT JOIN service_access sa ON sa.service_id=s.id
+    LEFT JOIN inventory_lines i ON i.service_id=s.id
+    LEFT JOIN generator_cooldowns c ON c.user_id=? AND c.service_id=s.id
     WHERE s.enabled=1 GROUP BY s.id ORDER BY s.created_at`).bind(now,user.id).all();
-  const products = await env.DB.prepare(`SELECT p.id,p.name,p.emoji,p.description,p.price,p.enabled,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id WHERE p.enabled=1 AND p.id NOT LIKE 'points-chest-%' GROUP BY p.id ORDER BY p.created_at`).all();
-  const wheel = await env.DB.prepare("SELECT id,emoji,label,points,weight FROM wheel_rewards ORDER BY created_at").all();
-  const wheelCooldown = await env.DB.prepare("SELECT next_allowed_at FROM wheel_cooldowns WHERE user_id=?").bind(user.id).first();
+  const products = await env.DB.prepare(`SELECT p.id,p.name,p.emoji,p.description,p.price,p.enabled,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id WHERE p.enabled=1 AND p.id NOT LIKE 'points-%' GROUP BY p.id ORDER BY p.created_at`).all();
+  const wheelRewards = await env.DB.prepare("SELECT id,emoji,label,points,weight FROM wheel_rewards ORDER BY created_at").all();
+  const wheel = await getWheelState(user,env,now);
   const summary = await env.DB.prepare(`SELECT
     (SELECT COUNT(*) FROM deliveries WHERE user_id=?) AS generations,
     (SELECT COUNT(*) FROM purchases WHERE user_id=?) AS purchases`).bind(user.id,user.id).first();
@@ -269,13 +327,21 @@ async function getCatalog(user, env, request) {
   const generationsToday = await getDailyGenerationUsage(user, env, dayKey);
   const dailyGenerationRemaining = dailyGenerationLimit === 0 ? -1 : Math.max(0,dailyGenerationLimit-generationsToday);
   return json({
-    services:services.results.map(s => ({...s,stock:Number(s.stock),cooldown_remaining:Math.ceil(Number(s.cooldown_ms)/1000)})),
+    rank:publicRank(user,env),
+    services:services.results.map(s => {
+      const requiredRank=normalizeAccessRank(s.required_rank);
+      return {...s,required_rank:requiredRank,access_granted:rankAllows(currentRank,requiredRank),stock:Number(s.stock),cooldown_remaining:Math.ceil(Number(s.cooldown_ms)/1000)};
+    }),
     products:[
       ...POINT_SHOP_CHESTS.map(p => ({...p,stock:-1,infinite_stock:true,enabled:1})),
       ...products.results.map(p => ({...p,stock:Number(p.stock),price:Number(p.price),infinite_stock:false}))
     ],
-    wheel_rewards:wheel.results.map(r => ({...r,points:Number(r.points),weight:Number(r.weight)})),
-    wheel_cooldown_remaining:Math.ceil(Math.max(0,Number(wheelCooldown?.next_allowed_at || 0)-now)/1000),
+    wheel_rewards:wheelRewards.results.map(r => ({...r,points:Number(r.points),weight:Number(r.weight)})),
+    wheel_cooldown_remaining:wheel.cooldown_remaining,
+    wheel_cycle_reset_at:wheel.reset_at,
+    wheel_free_spins_total:wheel.total,
+    wheel_free_spins_used:wheel.used,
+    wheel_free_spins_remaining:wheel.remaining,
     daily_generation_limit:dailyGenerationLimit,
     generations_today:generationsToday,
     daily_generation_remaining:dailyGenerationRemaining,
@@ -295,14 +361,8 @@ async function getWallet(user, env, request) {
 }
 
 async function getUserGenerationCooldownSeconds(user, env) {
-  const key = `user_generation_cooldown:${user.discord_id}`;
-  const defaultRaw = Number(await setting(env, "default_generation_cooldown_seconds", "900"));
-  const safeDefault = Number.isFinite(defaultRaw) ? Math.max(0, Math.min(31536000, Math.trunc(defaultRaw))) : 900;
-  const raw = Number(await setting(env, key, String(safeDefault)));
-  if (!Number.isFinite(raw)) return safeDefault;
-  return Math.max(0, Math.min(31536000, Math.trunc(raw)));
+  return rankRules(user,env).generation_cooldown_seconds;
 }
-
 
 function brusselsDayKey(timestamp = Date.now()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -316,12 +376,7 @@ function brusselsDayKey(timestamp = Date.now()) {
 }
 
 async function getUserDailyGenerationLimit(user, env) {
-  const key = `user_daily_generation_limit:${user.discord_id}`;
-  const defaultRaw = Number(await setting(env, "default_daily_generation_limit", "6"));
-  const safeDefault = Number.isInteger(defaultRaw) ? Math.max(0, Math.min(100000, defaultRaw)) : 6;
-  const raw = Number(await setting(env, key, String(safeDefault)));
-  if (!Number.isInteger(raw)) return safeDefault;
-  return Math.max(0, Math.min(100000, raw));
+  return rankRules(user,env).daily_generation_limit;
 }
 
 async function getDailyGenerationUsage(user, env, dayKey = brusselsDayKey()) {
@@ -383,6 +438,9 @@ async function generateLine(request, user, env) {
   const {service_id} = await parseJson(request);
   const service = await env.DB.prepare("SELECT * FROM services WHERE id=? AND enabled=1").bind(service_id).first();
   if (!service) throw httpError(404, "Service indisponible.");
+  const access = await env.DB.prepare("SELECT required_rank FROM service_access WHERE service_id=?").bind(service.id).first();
+  const requiredRank = normalizeAccessRank(access?.required_rank || "free");
+  if (!rankAllows(effectiveRank(user,env),requiredRank)) throw httpError(403, `Ce générateur est réservé au rang ${RANK_RULES[requiredRank].label}.`);
 
   const quota = await reserveDailyGeneration(user, env);
   let nextAllowed;
@@ -458,38 +516,46 @@ async function purchaseProduct(request, user, env) {
   return json({purchase:{id,kind:"line",title:product.name,value:await decryptText(line.cipher_text,line.iv,env),price,created_at:now},points:Number(deducted.points),progression}, 200, env, request);
 }
 
+async function getWheelState(user, env, now = Date.now()) {
+  const total = rankRules(user,env).wheel_free_spins;
+  const cooldownSeconds = Math.max(1,Number(await setting(env,"wheel_cooldown_seconds","43200")));
+  const row = await env.DB.prepare("SELECT cycle_ends_at,free_spins_used FROM wheel_cycle_usage WHERE user_id=?").bind(user.id).first();
+  const resetAt = Math.max(0,Number(row?.cycle_ends_at || 0));
+  if (!row || resetAt <= now) return {total,used:0,remaining:total,reset_at:0,cooldown_seconds:cooldownSeconds,cooldown_remaining:0};
+  const used = Math.max(0,Math.min(total,Number(row.free_spins_used || 0)));
+  const remaining = Math.max(0,total-used);
+  return {total,used,remaining,reset_at:resetAt,cooldown_seconds:cooldownSeconds,cooldown_remaining:remaining>0?0:Math.ceil((resetAt-now)/1000)};
+}
+
 async function spinWheel(request, user, env) {
   const now = Date.now();
-  const cooldownSeconds = Math.max(0,Number(await setting(env,"wheel_cooldown_seconds","3600")));
-  const current = await env.DB.prepare("SELECT next_allowed_at FROM wheel_cooldowns WHERE user_id=?").bind(user.id).first();
-  const currentNext = Math.max(0,Number(current?.next_allowed_at || 0));
-  let ticketUsed = false;
-  let nextAllowed = currentNext;
+  const rewards = (await env.DB.prepare("SELECT * FROM wheel_rewards ORDER BY created_at").all()).results;
+  if (!rewards.length) throw httpError(409, "Aucun gain configuré.");
+  const totalWeight = rewards.reduce((sum,reward)=>sum+Math.max(0,Number(reward.weight || 0)),0);
+  if (totalWeight <= 0) throw httpError(409,"Les probabilités de la roue sont invalides.");
 
-  if (currentNext > now) {
+  const state = await getWheelState(user,env,now);
+  let ticketUsed = false;
+  let freeSpinUsed = false;
+  let cycleEndsAt = state.reset_at;
+  let freeUsed = state.used;
+
+  if (state.remaining > 0) {
+    if (!cycleEndsAt) cycleEndsAt = now + state.cooldown_seconds * 1000;
+    freeUsed += 1;
+    freeSpinUsed = true;
+    await env.DB.prepare(`INSERT INTO wheel_cycle_usage(user_id,cycle_ends_at,free_spins_used,updated_at) VALUES(?,?,?,?)
+      ON CONFLICT(user_id) DO UPDATE SET cycle_ends_at=excluded.cycle_ends_at,free_spins_used=excluded.free_spins_used,updated_at=excluded.updated_at`)
+      .bind(user.id,cycleEndsAt,freeUsed,now).run();
+    await env.DB.prepare(`INSERT INTO wheel_cooldowns(user_id,next_allowed_at) VALUES(?,?)
+      ON CONFLICT(user_id) DO UPDATE SET next_allowed_at=excluded.next_allowed_at`).bind(user.id,cycleEndsAt).run();
+  } else {
     const ticket = await consumeInventoryItem(user,"wheel_ticket",1,env);
     ticketUsed = ticket.ok === true;
-    if (!ticketUsed) throw httpError(429, `Roue disponible dans ${Math.ceil((currentNext-now)/1000)} seconde(s).`, {next_allowed_at:currentNext,ticket_required:true});
-  } else {
-    nextAllowed = now + cooldownSeconds * 1000;
-    await env.DB.prepare(`INSERT INTO wheel_cooldowns(user_id,next_allowed_at) VALUES(?,?)
-      ON CONFLICT(user_id) DO UPDATE SET next_allowed_at=excluded.next_allowed_at`).bind(user.id,nextAllowed).run();
+    if (!ticketUsed) throw httpError(429, `Tous tes tours gratuits sont utilisés. Prochains tours dans ${Math.ceil((state.reset_at-now)/1000)} seconde(s).`, {next_allowed_at:state.reset_at,ticket_required:true,free_spins_total:state.total,free_spins_used:state.used});
   }
 
-  const rewards = (await env.DB.prepare("SELECT * FROM wheel_rewards ORDER BY created_at").all()).results;
-  if (!rewards.length) {
-    if (ticketUsed) await grantInventoryItem(user,"wheel_ticket",1,env);
-    else await env.DB.prepare("UPDATE wheel_cooldowns SET next_allowed_at=0 WHERE user_id=?").bind(user.id).run();
-    throw httpError(409, "Aucun gain configuré.");
-  }
-
-  const total = rewards.reduce((sum,reward)=>sum+Math.max(0,Number(reward.weight || 0)),0);
-  if (total <= 0) {
-    if (ticketUsed) await grantInventoryItem(user,"wheel_ticket",1,env);
-    else await env.DB.prepare("UPDATE wheel_cooldowns SET next_allowed_at=0 WHERE user_id=?").bind(user.id).run();
-    throw httpError(409,"Les probabilités de la roue sont invalides.");
-  }
-  let pick = secureRandomUnit()*total;
+  let pick = secureRandomUnit()*totalWeight;
   let chosen = rewards[rewards.length-1];
   for (const reward of rewards) {
     pick -= Math.max(0,Number(reward.weight || 0));
@@ -499,12 +565,11 @@ async function spinWheel(request, user, env) {
   const points = Math.max(0,Number(chosen.points || 0));
   if (points > 0) await addPoints(user,points,env);
   await env.DB.prepare("INSERT INTO wheel_spins(id,user_id,reward_id,reward_label,points,created_at) VALUES(?,?,?,?,?,?)").bind(crypto.randomUUID(),user.id,chosen.id,chosen.label,points,now).run();
-  const progression = await recordActivity(user,"wheel",1,Number(await setting(env,"xp_wheel","15")),env,{reward_id:chosen.id,reward_label:chosen.label,points,ticket_used:ticketUsed});
-  return json({reward:{id:chosen.id,emoji:chosen.emoji,label:chosen.label,points},next_allowed_at:nextAllowed,ticket_used:ticketUsed,progression}, 200, env, request);
+  const progression = await recordActivity(user,"wheel",1,Number(await setting(env,"xp_wheel","15")),env,{reward_id:chosen.id,reward_label:chosen.label,points,ticket_used:ticketUsed,free_spin_used:freeSpinUsed});
+  const after = await getWheelState(user,env,now);
+  return json({reward:{id:chosen.id,emoji:chosen.emoji,label:chosen.label,points},next_allowed_at:after.reset_at,ticket_used:ticketUsed,free_spin_used:freeSpinUsed,free_spins_total:after.total,free_spins_used:after.used,free_spins_remaining:after.remaining,progression}, 200, env, request);
 }
 
-
-// ===== Progression V7 ========================================================
 function weekKeyFromDayKey(dayKey) {
   const date = new Date(`${dayKey}T12:00:00Z`);
   const day = date.getUTCDay() || 7;
@@ -663,10 +728,13 @@ function missionPeriodKey(scope, timestamp = Date.now()) {
 }
 
 async function updateMissionProgress(user, activityType, amount, env) {
-  const missions = await env.DB.prepare("SELECT * FROM missions WHERE active=1 AND (activity_type=? OR activity_type='any') ORDER BY sort_order")
-    .bind(activityType).all();
+  const missions = await env.DB.prepare(`SELECT m.*,COALESCE(ma.required_rank,'free') AS required_rank
+    FROM missions m LEFT JOIN mission_access ma ON ma.mission_id=m.id
+    WHERE m.active=1 AND (m.activity_type=? OR m.activity_type='any') ORDER BY m.sort_order`).bind(activityType).all();
   const now = Date.now();
+  const currentRank = effectiveRank(user,env);
   for (const mission of missions.results || []) {
+    if (!rankAllows(currentRank,mission.required_rank)) continue;
     const periodKey = missionPeriodKey(mission.scope,now);
     const increment = Math.max(0,Math.trunc(Number(amount || 0)));
     await env.DB.prepare(`INSERT INTO user_mission_progress(user_id,mission_id,period_key,progress,claimed,completed_at,updated_at)
@@ -715,18 +783,23 @@ async function logAwardedXp(user, activityType, awardedXp, env, metadata = {}) {
 }
 
 async function progressionMissionRows(user, env) {
-  const missions = await env.DB.prepare("SELECT * FROM missions WHERE active=1 ORDER BY scope,sort_order,title").all();
+  const missions = await env.DB.prepare(`SELECT m.*,COALESCE(ma.required_rank,'free') AS required_rank
+    FROM missions m LEFT JOIN mission_access ma ON ma.mission_id=m.id
+    WHERE m.active=1 ORDER BY m.scope,m.sort_order,m.title`).all();
   const output = [];
+  const currentRank = effectiveRank(user,env);
   for (const mission of missions.results || []) {
     const periodKey = missionPeriodKey(mission.scope);
     const progress = await env.DB.prepare(`SELECT progress,claimed,completed_at,claimed_at FROM user_mission_progress
       WHERE user_id=? AND mission_id=? AND period_key=?`).bind(user.id,mission.id,periodKey).first();
     const current = Math.max(0,Number(progress?.progress || 0));
+    const requiredRank=normalizeAccessRank(mission.required_rank);
     output.push({
       id:mission.id,scope:mission.scope,title:mission.title,description:mission.description,activity_type:mission.activity_type,
       target:Number(mission.target),progress:current,percent:Math.min(100,Math.round((current/Number(mission.target))*100)),
       completed:current>=Number(mission.target),claimed:!!progress?.claimed,reward_points:Number(mission.reward_points || 0),
-      reward_xp:Number(mission.reward_xp || 0),reward_item_key:mission.reward_item_key || null,period_key:periodKey
+      reward_xp:Number(mission.reward_xp || 0),reward_item_key:mission.reward_item_key || null,period_key:periodKey,
+      required_rank:requiredRank,access_granted:rankAllows(currentRank,requiredRank)
     });
   }
   return output;
@@ -742,6 +815,14 @@ async function progressionInventoryRows(user, env) {
   return (rows.results || []).map(row => ({...row,quantity:Number(row.quantity),equipped:!!row.equipped,stackable:!!row.stackable}));
 }
 
+async function dailyRewardPreview(user, profile, env) {
+  const nextStreak = Math.max(1,Number(profile?.streak_current || 0)+1);
+  const basePoints = Math.max(0,Number(await setting(env,"daily_base_points","50"))) + Math.min(30,nextStreak)*5;
+  const baseXp = Math.max(0,Number(await setting(env,"daily_base_xp","30"))) + Math.min(30,nextStreak)*3;
+  const multiplier = rankRules(user,env).daily_reward_multiplier;
+  return {points:Math.round(basePoints*multiplier),xp:Math.round(baseXp*multiplier),multiplier};
+}
+
 async function getProgression(request, user, env) {
   const profile = await ensureProgressProfile(user,env);
   const missions = await progressionMissionRows(user,env);
@@ -752,9 +833,11 @@ async function getProgression(request, user, env) {
   const title = profile.active_title_key ? await inventoryItem(profile.active_title_key,env) : null;
   const cosmetic = profile.active_cosmetic_key ? await inventoryItem(profile.active_cosmetic_key,env) : null;
   const today = brusselsDayKey();
+  const preview = await dailyRewardPreview(user,profile,env);
   return json({
+    rank:publicRank(user,env),
     profile:{...profileView(profile),missions_completed:Number(missionCount?.n || 0),points:Number(userRow?.points || 0),active_title:title?{key:title.item_key,name:title.name,emoji:title.emoji}:null,active_cosmetic:cosmetic?{key:cosmetic.item_key,name:cosmetic.name,emoji:cosmetic.emoji}:null},
-    daily:{day_key:today,can_claim:profile.last_daily_key!==today,next_points:Math.max(0,Number(await setting(env,"daily_base_points","50")))+Math.min(30,Number(profile.streak_current || 0)+1)*5,next_xp:Math.max(0,Number(await setting(env,"daily_base_xp","30")))+Math.min(30,Number(profile.streak_current || 0)+1)*3},
+    daily:{day_key:today,can_claim:profile.last_daily_key!==today,next_points:preview.points,next_xp:preview.xp,multiplier:preview.multiplier},
     missions,inventory,effects:(effects.results || []).map(x=>({...x,multiplier:Number(x.multiplier),expires_at:Number(x.expires_at)}))
   },200,env,request);
 }
@@ -776,8 +859,11 @@ async function claimDailyReward(request, user, env) {
     .bind(streak,streak,today,Date.now(),user.id,today).first();
   if (!updated) throw httpError(409,"La récompense quotidienne a déjà été récupérée aujourd’hui.");
   if (protectedStreak) await consumeInventoryItem(user,"streak_protector",1,env);
-  const points = Math.max(0,Number(await setting(env,"daily_base_points","50"))) + Math.min(30,streak)*5;
+  const multiplier = rankRules(user,env).daily_reward_multiplier;
+  const basePoints = Math.max(0,Number(await setting(env,"daily_base_points","50"))) + Math.min(30,streak)*5;
   const baseXp = Math.max(0,Number(await setting(env,"daily_base_xp","30"))) + Math.min(30,streak)*3;
+  const points = Math.round(basePoints*multiplier);
+  const rankedXp = Math.round(baseXp*multiplier);
   await addPoints(user,points,env);
   let milestoneItem = null;
   if (streak % 30 === 0) milestoneItem = "chest_legendary";
@@ -785,13 +871,15 @@ async function claimDailyReward(request, user, env) {
   else if (streak % 7 === 0) milestoneItem = "chest_rare";
   else if (streak % 3 === 0) milestoneItem = "chest_common";
   const item = milestoneItem ? await grantInventoryItem(user,milestoneItem,1,env) : null;
-  const xp = await recordActivity(user,"daily_claim",1,baseXp,env,{streak,protected:protectedStreak});
-  return json({ok:true,streak,protected:protectedStreak,reward:{points,xp:xp.awarded,item},profile:xp.profile},200,env,request);
+  const xp = await recordActivity(user,"daily_claim",1,rankedXp,env,{streak,protected:protectedStreak,rank:effectiveRank(user,env),daily_multiplier:multiplier});
+  return json({ok:true,streak,protected:protectedStreak,daily_multiplier:multiplier,reward:{points,xp:xp.awarded,item},profile:xp.profile},200,env,request);
 }
 
 async function claimMissionReward(request, user, env, missionId) {
-  const mission = await env.DB.prepare("SELECT * FROM missions WHERE id=? AND active=1").bind(missionId).first();
+  const mission = await env.DB.prepare(`SELECT m.*,COALESCE(ma.required_rank,'free') AS required_rank
+    FROM missions m LEFT JOIN mission_access ma ON ma.mission_id=m.id WHERE m.id=? AND m.active=1`).bind(missionId).first();
   if (!mission) throw httpError(404,"Mission introuvable.");
+  if (!rankAllows(effectiveRank(user,env),mission.required_rank)) throw httpError(403,`Cette mission est réservée au rang ${RANK_RULES[normalizeAccessRank(mission.required_rank)].label}.`);
   const periodKey = missionPeriodKey(mission.scope);
   const progress = await env.DB.prepare("SELECT * FROM user_mission_progress WHERE user_id=? AND mission_id=? AND period_key=?")
     .bind(user.id,mission.id,periodKey).first();
@@ -1060,6 +1148,7 @@ async function createMission(request, env) {
   const title = String(body.title || "").trim().slice(0,100);
   if (!title) throw httpError(400, "Titre requis.");
   const scope = ["classic","weekly"].includes(body.scope) ? body.scope : "classic";
+  const requiredRank = normalizeAccessRank(body.required_rank || "free");
   let id = String(body.id || slug(title)).trim().slice(0,64) || crypto.randomUUID();
   let suffix = 2;
   const baseId = id;
@@ -1073,6 +1162,8 @@ async function createMission(request, env) {
       Math.max(0,Math.trunc(Number(body.reward_xp || 0))),rewardItemKey,body.active===false?0:1,
       Math.trunc(Number(body.sort_order || 0)),now,now
     ).run();
+  await env.DB.prepare(`INSERT INTO mission_access(mission_id,required_rank,updated_at) VALUES(?,?,?)
+    ON CONFLICT(mission_id) DO UPDATE SET required_rank=excluded.required_rank,updated_at=excluded.updated_at`).bind(id,requiredRank,now).run();
   return json({ok:true,id},201,env,request);
 }
 
@@ -1084,12 +1175,16 @@ async function updateMission(request, env, id) {
   if (!title) throw httpError(400, "Titre requis.");
   const scope = ["classic","weekly"].includes(body.scope) ? body.scope : current.scope;
   const rewardItemKey = await progressionRewardItemKey(body.reward_item_key ?? current.reward_item_key, env);
+  const access = await env.DB.prepare("SELECT required_rank FROM mission_access WHERE mission_id=?").bind(id).first();
+  const requiredRank = normalizeAccessRank(body.required_rank ?? access?.required_rank ?? "free");
   await env.DB.prepare(`UPDATE missions SET scope=?,title=?,description=?,activity_type=?,target=?,reward_points=?,reward_xp=?,reward_item_key=?,active=?,sort_order=?,updated_at=? WHERE id=?`).bind(
     scope,title,String(body.description ?? current.description).slice(0,500),progressionActivityType(body.activity_type ?? current.activity_type),
     Math.max(1,Math.trunc(Number(body.target ?? current.target))),Math.max(0,Math.trunc(Number(body.reward_points ?? current.reward_points))),
     Math.max(0,Math.trunc(Number(body.reward_xp ?? current.reward_xp))),rewardItemKey,
     body.active===undefined?current.active:(body.active?1:0),Math.trunc(Number(body.sort_order ?? current.sort_order)),Date.now(),id
   ).run();
+  await env.DB.prepare(`INSERT INTO mission_access(mission_id,required_rank,updated_at) VALUES(?,?,?)
+    ON CONFLICT(mission_id) DO UPDATE SET required_rank=excluded.required_rank,updated_at=excluded.updated_at`).bind(id,requiredRank,Date.now()).run();
   return json({ok:true,id},200,env,request);
 }
 
@@ -1214,12 +1309,10 @@ async function handleAdmin(request, user, env, path) {
   match = path.match(/^\/api\/admin\/wheel\/([^/]+)$/);
   if (match && request.method === "PUT") return updateWheelReward(request, env, match[1]);
   if (match && request.method === "DELETE") return deleteWheelReward(request, env, match[1]);
+  match = path.match(/^\/api\/admin\/users\/([^/]+)\/rank$/);
+  if (match && (request.method === "PUT" || request.method === "POST")) return setUserRank(request, env, decodeURIComponent(match[1]));
   match = path.match(/^\/api\/admin\/users\/([^/]+)\/points$/);
   if (match && request.method === "POST") return adjustPoints(request, env, match[1]);
-  match = path.match(/^\/api\/admin\/users\/([^/]+)\/generation-cooldown$/);
-  if (match && (request.method === "PUT" || request.method === "POST")) return setUserGenerationCooldown(request, env, decodeURIComponent(match[1]));
-  match = path.match(/^\/api\/admin\/users\/([^/]+)\/generation-limit$/);
-  if (match && (request.method === "PUT" || request.method === "POST")) return setUserDailyGenerationLimit(request, env, decodeURIComponent(match[1]));
   match = path.match(/^\/api\/admin\/users\/([^/]+)\/timer$/);
   if (match && (request.method === "PUT" || request.method === "POST")) return setUserTimer(request, env, decodeURIComponent(match[1]));
   throw httpError(404, "Route admin introuvable.");
@@ -1270,11 +1363,13 @@ async function getAdminTimersData(env) {
 }
 
 async function adminOverview(request, env) {
-  // Requêtes séquentielles : plus stables avec D1 que plusieurs lectures concurrentes.
-  const services = await env.DB.prepare(`SELECT s.*,COUNT(i.id) AS stock FROM services s LEFT JOIN inventory_lines i ON i.service_id=s.id GROUP BY s.id ORDER BY s.created_at`).all();
-  const products = await env.DB.prepare(`SELECT p.*,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id WHERE p.id NOT LIKE 'points-chest-%' GROUP BY p.id ORDER BY p.created_at`).all();
+  const services = await env.DB.prepare(`SELECT s.*,COALESCE(sa.required_rank,'free') AS required_rank,COUNT(i.id) AS stock
+    FROM services s LEFT JOIN service_access sa ON sa.service_id=s.id LEFT JOIN inventory_lines i ON i.service_id=s.id
+    GROUP BY s.id ORDER BY s.created_at`).all();
+  const products = await env.DB.prepare(`SELECT p.*,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id WHERE p.id NOT LIKE 'points-%' GROUP BY p.id ORDER BY p.created_at`).all();
   const wheel = await env.DB.prepare("SELECT * FROM wheel_rewards ORDER BY created_at").all();
-  const missions = await env.DB.prepare("SELECT * FROM missions ORDER BY scope,sort_order,title").all();
+  const missions = await env.DB.prepare(`SELECT m.*,COALESCE(ma.required_rank,'free') AS required_rank
+    FROM missions m LEFT JOIN mission_access ma ON ma.mission_id=m.id ORDER BY m.scope,m.sort_order,m.title`).all();
   const communityEvents = await env.DB.prepare(`SELECT e.*,COALESCE(ep.progress,0) AS progress,
     (SELECT COUNT(*) FROM community_event_participants p WHERE p.event_id=e.id) AS participants
     FROM community_events e LEFT JOIN community_event_progress ep ON ep.event_id=e.id
@@ -1282,50 +1377,31 @@ async function adminOverview(request, env) {
   const itemCatalog = await env.DB.prepare("SELECT item_key,name,emoji,item_type,rarity FROM item_catalog ORDER BY item_type,rarity,name").all();
   const dayKey = brusselsDayKey();
   const users = await env.DB.prepare(`SELECT u.discord_id,u.username,u.global_name AS display_name,u.points,u.total_earned,u.total_spent,
-    COALESCE(
-      CAST(gen_setting.value AS INTEGER),
-      CAST((SELECT value FROM app_settings WHERE key='default_generation_cooldown_seconds') AS INTEGER),
-      900
-    ) AS generation_cooldown_seconds,
-    COALESCE(
-      CAST(limit_setting.value AS INTEGER),
-      CAST((SELECT value FROM app_settings WHERE key='default_daily_generation_limit') AS INTEGER),
-      6
-    ) AS daily_generation_limit,
+    COALESCE(ur.rank,'free') AS stored_rank,
     COALESCE((SELECT dgu.used FROM daily_generation_usage dgu WHERE dgu.user_id=u.id AND dgu.day_key=?),0) AS generations_today,
     (SELECT COUNT(*) FROM deliveries d WHERE d.user_id=u.id) AS generations,
     (SELECT COUNT(*) FROM purchases p WHERE p.user_id=u.id) AS purchases
-    FROM users u
-    LEFT JOIN app_settings gen_setting ON gen_setting.key=('user_generation_cooldown:' || u.discord_id)
-    LEFT JOIN app_settings limit_setting ON limit_setting.key=('user_daily_generation_limit:' || u.discord_id)
+    FROM users u LEFT JOIN user_ranks ur ON ur.user_id=u.id
     ORDER BY u.created_at DESC LIMIT 200`).bind(dayKey).all();
   const settingsRows = await env.DB.prepare("SELECT key,value FROM app_settings").all();
   const history = await getAdminHistoryData(env);
   const timers = await getAdminTimersData(env);
   const settings = Object.fromEntries(settingsRows.results.map(x => [x.key,x.value]));
   return json({
-    api_version:"progression-v7.3",
-    services:services.results.map(x=>({...x,stock:Number(x.stock),cooldown_seconds:Number(x.cooldown_seconds),enabled:!!x.enabled})),
+    api_version:"progression-v7.6",
+    rank_rules:RANK_RULES,
+    services:services.results.map(x=>({...x,required_rank:normalizeAccessRank(x.required_rank),stock:Number(x.stock),cooldown_seconds:Number(x.cooldown_seconds),enabled:!!x.enabled})),
     products:products.results.map(x=>({...x,stock:Number(x.stock),price:Number(x.price),enabled:!!x.enabled})),
     wheel_rewards:wheel.results.map(x=>({...x,points:Number(x.points),weight:Number(x.weight)})),
-    missions:missions.results.map(x=>({...x,target:Number(x.target),reward_points:Number(x.reward_points||0),reward_xp:Number(x.reward_xp||0),sort_order:Number(x.sort_order||0),active:!!x.active})),
+    missions:missions.results.map(x=>({...x,required_rank:normalizeAccessRank(x.required_rank),target:Number(x.target),reward_points:Number(x.reward_points||0),reward_xp:Number(x.reward_xp||0),sort_order:Number(x.sort_order||0),active:!!x.active})),
     community_events:communityEvents.results.map(x=>({...x,target:Number(x.target),reward_points:Number(x.reward_points||0),reward_xp:Number(x.reward_xp||0),starts_at:Number(x.starts_at),ends_at:Number(x.ends_at),progress:Number(x.progress||0),participants:Number(x.participants||0),active:!!x.active})),
     item_catalog:itemCatalog.results || [],
-    users:users.results.map(x=>({...x,
-      points:Number(x.points),
-      total_earned:Number(x.total_earned),
-      total_spent:Number(x.total_spent),
-      generations:Number(x.generations),
-      purchases:Number(x.purchases),
-      generation_cooldown_seconds:Number(x.generation_cooldown_seconds ?? 900),
-      daily_generation_limit:Number(x.daily_generation_limit ?? 6),
-      generations_today:Number(x.generations_today || 0)
-    })),
-    settings,
-    history,
-    timers,
-    daily_usage_day:dayKey,
-    daily_usage_timezone:"Europe/Brussels"
+    users:users.results.map(x=>{
+      const accountRank=adminIds(env).has(x.discord_id)?"admin":normalizeRank(x.stored_rank);
+      const rules=RANK_RULES[accountRank];
+      return {...x,account_rank:accountRank,rank:rules,points:Number(x.points),total_earned:Number(x.total_earned),total_spent:Number(x.total_spent),generations:Number(x.generations),purchases:Number(x.purchases),generation_cooldown_seconds:rules.generation_cooldown_seconds,daily_generation_limit:rules.daily_generation_limit,generations_today:Number(x.generations_today || 0)};
+    }),
+    settings,history,timers,daily_usage_day:dayKey,daily_usage_timezone:"Europe/Brussels"
   },200,env,request);
 }
 
@@ -1340,14 +1416,19 @@ async function createService(request, env) {
   while (await env.DB.prepare("SELECT 1 FROM services WHERE id=?").bind(id).first()) id = `${slug(name)}-${suffix++}`;
   const now = Date.now();
   await env.DB.prepare("INSERT INTO services(id,name,emoji,description,cooldown_seconds,enabled,created_at,updated_at) VALUES(?,?,?,?,?,1,?,?)").bind(id,name,String(body.emoji||"⚡").slice(0,16),String(body.description||"").slice(0,300),Math.max(0,Number(body.cooldown_seconds||0)),now,now).run();
+  await env.DB.prepare("INSERT INTO service_access(service_id,required_rank,updated_at) VALUES(?,?,?)").bind(id,normalizeAccessRank(body.required_rank || "free"),now).run();
   return json({ok:true,id},201,env,request);
 }
 
 async function updateService(request, env, id) {
   const body = await parseJson(request), current = await env.DB.prepare("SELECT * FROM services WHERE id=?").bind(id).first();
   if (!current) throw httpError(404,"Service introuvable.");
+  const currentAccess = await env.DB.prepare("SELECT required_rank FROM service_access WHERE service_id=?").bind(id).first();
+  const requiredRank = normalizeAccessRank(body.required_rank ?? currentAccess?.required_rank ?? "free");
   await env.DB.prepare("UPDATE services SET name=?,emoji=?,description=?,cooldown_seconds=?,enabled=?,updated_at=? WHERE id=?").bind(
     String(body.name ?? current.name).trim().slice(0,80),String(body.emoji ?? current.emoji).slice(0,16),String(body.description ?? current.description).slice(0,300),Math.max(0,Number(body.cooldown_seconds ?? current.cooldown_seconds)),body.enabled===undefined?current.enabled:(body.enabled?1:0),Date.now(),id).run();
+  await env.DB.prepare(`INSERT INTO service_access(service_id,required_rank,updated_at) VALUES(?,?,?)
+    ON CONFLICT(service_id) DO UPDATE SET required_rank=excluded.required_rank,updated_at=excluded.updated_at`).bind(id,requiredRank,Date.now()).run();
   return json({ok:true},200,env,request);
 }
 
@@ -1403,7 +1484,7 @@ async function updateSettings(request,env){
   const values={
     default_generation_cooldown_seconds:Math.round(defaultMinutes*60),
     default_daily_generation_limit:defaultDailyLimit,
-    wheel_cooldown_seconds:Math.max(0,Number(b.wheel_cooldown_seconds||0)),
+    wheel_cooldown_seconds:43200,
     starting_points:Math.max(0,Number(b.starting_points||0)),
     xp_generation:Math.max(0,Math.trunc(Number(b.xp_generation ?? 20))),
     xp_purchase:Math.max(0,Math.trunc(Number(b.xp_purchase ?? 35))),
@@ -1416,37 +1497,27 @@ async function updateSettings(request,env){
   return json({ok:true},200,env,request)
 }
 
+async function setUserRank(request, env, discordId) {
+  const cleanId = String(discordId || "").trim();
+  if (!/^\d{5,30}$/.test(cleanId)) throw httpError(400, "ID Discord invalide.");
+  const body = await parseJson(request);
+  const rank = normalizeRank(body.rank);
+  if (!Object.prototype.hasOwnProperty.call(RANK_RULES,String(body.rank || "").toLowerCase())) throw httpError(400,"Rang invalide.");
+  const user = await env.DB.prepare("SELECT id FROM users WHERE discord_id=?").bind(cleanId).first();
+  if (!user) throw httpError(404,"Utilisateur introuvable. Il doit s’être connecté au site au moins une fois.");
+  const now=Date.now();
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO user_ranks(user_id,rank,updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET rank=excluded.rank,updated_at=excluded.updated_at`).bind(user.id,rank,now),
+    env.DB.prepare("DELETE FROM generator_cooldowns WHERE user_id=?").bind(user.id),
+    env.DB.prepare("DELETE FROM wheel_cooldowns WHERE user_id=?").bind(user.id),
+    env.DB.prepare("DELETE FROM wheel_cycle_usage WHERE user_id=?").bind(user.id),
+    env.DB.prepare("DELETE FROM app_settings WHERE key IN (?,?)").bind(`user_generation_cooldown:${cleanId}`,`user_daily_generation_limit:${cleanId}`)
+  ]);
+  return json({ok:true,discord_id:cleanId,rank:RANK_RULES[rank]},200,env,request);
+}
+
 async function adjustPoints(request,env,discordId){const {delta}=await parseJson(request),amount=Math.trunc(Number(delta));if(!Number.isFinite(amount)||Math.abs(amount)>1000000)throw httpError(400,"Ajustement invalide.");const row=await env.DB.prepare("UPDATE users SET points=MAX(0,points+?),total_earned=total_earned+CASE WHEN ?>0 THEN ? ELSE 0 END,total_spent=total_spent+CASE WHEN ?<0 THEN ABS(?) ELSE 0 END,updated_at=? WHERE discord_id=? RETURNING points").bind(amount,amount,amount,amount,amount,Date.now(),discordId).first();if(!row)throw httpError(404,"Utilisateur introuvable.");return json({ok:true,points:Number(row.points)},200,env,request)}
 
-async function setUserGenerationCooldown(request, env, discordId) {
-  const cleanId = String(discordId || "").trim();
-  if (!/^\d{5,30}$/.test(cleanId)) throw httpError(400, "ID Discord invalide.");
-  const user = await env.DB.prepare("SELECT id FROM users WHERE discord_id=?").bind(cleanId).first();
-  if (!user) throw httpError(404, "Utilisateur introuvable. Il doit s’être connecté au site au moins une fois.");
-  const body = await parseJson(request);
-  const minutes = Number(body.minutes);
-  if (!Number.isFinite(minutes) || minutes < 0 || minutes > 525600) throw httpError(400, "Durée invalide (0 à 525 600 minutes).");
-  const seconds = Math.round(minutes * 60);
-  const key = `user_generation_cooldown:${cleanId}`;
-  await env.DB.prepare(`INSERT INTO app_settings(key,value) VALUES(?,?)
-    ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(key,String(seconds)).run();
-  return json({ok:true,discord_id:cleanId,minutes:seconds/60,seconds},200,env,request);
-}
-
-
-async function setUserDailyGenerationLimit(request, env, discordId) {
-  const cleanId = String(discordId || "").trim();
-  if (!/^\d{5,30}$/.test(cleanId)) throw httpError(400, "ID Discord invalide.");
-  const user = await env.DB.prepare("SELECT id FROM users WHERE discord_id=?").bind(cleanId).first();
-  if (!user) throw httpError(404, "Utilisateur introuvable. Il doit s’être connecté au site au moins une fois.");
-  const body = await parseJson(request);
-  const limit = Number(body.limit);
-  if (!Number.isInteger(limit) || limit < 0 || limit > 100000) throw httpError(400, "Limite invalide (0 à 100 000). 0 signifie illimité.");
-  const key = `user_daily_generation_limit:${cleanId}`;
-  await env.DB.prepare(`INSERT INTO app_settings(key,value) VALUES(?,?)
-    ON CONFLICT(key) DO UPDATE SET value=excluded.value`).bind(key,String(limit)).run();
-  return json({ok:true,discord_id:cleanId,limit,unlimited:limit===0},200,env,request);
-}
 
 async function setUserTimer(request, env, discordId) {
   const cleanId = String(discordId || "").trim();
@@ -1457,15 +1528,22 @@ async function setUserTimer(request, env, discordId) {
   if (!Number.isFinite(seconds) || seconds < 0 || seconds > 31536000) throw httpError(400, "Durée invalide (0 à 31 536 000 secondes).");
   const user = await env.DB.prepare("SELECT id,discord_id,username,global_name FROM users WHERE discord_id=?").bind(cleanId).first();
   if (!user) throw httpError(404, "Utilisateur introuvable. Il doit s’être connecté au site au moins une fois.");
+  user.account_rank = await loadUserRank(user, env);
   const now = Date.now();
   const nextAllowedAt = seconds === 0 ? 0 : now + seconds * 1000;
 
   if (type === "wheel") {
     if (seconds === 0) {
-      await env.DB.prepare("DELETE FROM wheel_cooldowns WHERE user_id=?").bind(user.id).run();
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM wheel_cooldowns WHERE user_id=?").bind(user.id),
+        env.DB.prepare("DELETE FROM wheel_cycle_usage WHERE user_id=?").bind(user.id)
+      ]);
     } else {
-      await env.DB.prepare(`INSERT INTO wheel_cooldowns(user_id,next_allowed_at) VALUES(?,?)
-        ON CONFLICT(user_id) DO UPDATE SET next_allowed_at=excluded.next_allowed_at`).bind(user.id,nextAllowedAt).run();
+      const allowance=rankRules(user,env).wheel_free_spins;
+      await env.DB.batch([
+        env.DB.prepare(`INSERT INTO wheel_cooldowns(user_id,next_allowed_at) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET next_allowed_at=excluded.next_allowed_at`).bind(user.id,nextAllowedAt),
+        env.DB.prepare(`INSERT INTO wheel_cycle_usage(user_id,cycle_ends_at,free_spins_used,updated_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET cycle_ends_at=excluded.cycle_ends_at,free_spins_used=excluded.free_spins_used,updated_at=excluded.updated_at`).bind(user.id,nextAllowedAt,allowance,now)
+      ]);
     }
     return json({ok:true,type:"wheel",discord_id:cleanId,seconds,next_allowed_at:nextAllowedAt},200,env,request);
   }
