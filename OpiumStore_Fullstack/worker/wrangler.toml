@@ -3,7 +3,7 @@ main = "src/index.js"
 compatibility_date = "2026-07-12"
 
 [vars]
-FRONTEND_ORIGIN = "https://YOUR-SITE.onrender.com"
+FRONTEND_ORIGIN = "https://opiumstore-hub.onrender.com"
 DISCORD_REDIRECT_URI = "https://opiumstore-api.opiumstore.workers.dev/auth/discord/callback"
 ADMIN_DISCORD_IDS = "1456328839062880409"
 

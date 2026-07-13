@@ -25,7 +25,9 @@
     wheelRotation: 0,
     wheelBusy: false,
     generatorResult: null,
-    purchaseResult: null
+    purchaseResult: null,
+    installPrompt: null,
+    appInstalled: window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator.standalone === true
   };
 
   const $ = (s) => document.querySelector(s);
@@ -103,6 +105,28 @@
       area.remove();
       showToast("Copié dans le presse-papiers.");
     }
+  }
+
+  function isStandaloneApp() {
+    return state.appInstalled || window.matchMedia?.("(display-mode: standalone)")?.matches || window.navigator.standalone === true;
+  }
+
+  async function installApplication() {
+    if (isStandaloneApp()) {
+      showToast("L’application OpiumStore est déjà installée.");
+      return;
+    }
+    if (!state.installPrompt) {
+      showToast("Utilise le menu du navigateur puis « Installer l’application » ou « Ajouter à l’écran d’accueil ».", true);
+      return;
+    }
+    const prompt = state.installPrompt;
+    state.installPrompt = null;
+    await prompt.prompt();
+    const choice = await prompt.userChoice.catch(() => ({outcome:"dismissed"}));
+    if (choice.outcome === "accepted") showToast("Installation d’OpiumStore lancée.");
+    else showToast("Installation annulée.");
+    render();
   }
 
   async function api(path, options = {}) {
@@ -414,6 +438,36 @@
     </article>`;
   }
 
+  function promoPage() {
+    return `<section class="page">
+      <div class="section-head"><div><span class="eyebrow">CODES PROMOS</span><h2>Utiliser un code</h2><p>Entre ici un code créé depuis le panel administrateur. Chaque code ne peut être utilisé qu’une seule fois par compte.</p></div><span class="badge badge-yellow">🎟️ Récompenses</span></div>
+      <article class="card promo-redeem-card">
+        <div class="promo-redeem-icon">🎟️</div>
+        <div class="promo-redeem-copy"><h3>Ton code OpiumStore</h3><p class="muted">Les majuscules et minuscules sont acceptées. Les espaces au début et à la fin sont supprimés automatiquement.</p></div>
+        <div class="promo-redeem-form"><input id="promoCodeInput" class="input" autocomplete="off" maxlength="40" placeholder="EXEMPLE : OPIUM2026"><button class="btn btn-primary" data-redeem-promo>Utiliser le code</button></div>
+      </article>
+      <article class="card"><h3>Comment ça marche ?</h3><div class="admin-list"><div>1. Récupère un code donné par un administrateur.</div><div>2. Colle-le dans le champ ci-dessus.</div><div>3. Clique sur <b>Utiliser le code</b>.</div><div>4. Les points, l’XP ou le coffre sont ajoutés immédiatement à ton compte.</div></div></article>
+    </section>`;
+  }
+
+  function appInstallPage() {
+    const installed = isStandaloneApp();
+    const canPrompt = !!state.installPrompt;
+    const buttonText = installed ? "Application déjà installée" : canPrompt ? "Installer OpiumStore" : "Voir les instructions d’installation";
+    return `<section class="page">
+      <div class="section-head"><div><span class="eyebrow">APPLICATION OPIUMSTORE</span><h2>Installer le Hub sur ton appareil</h2><p>Installe le site comme une application indépendante, avec son icône et sa propre fenêtre.</p></div><span class="badge ${installed ? "badge-green" : "badge-yellow"}">${installed ? "✓ Installée" : "PWA"}</span></div>
+      <article class="card install-app-card">
+        <img src="assets/icon-192.png" alt="Icône OpiumStore" class="install-app-icon">
+        <div><h3>OpiumStore Hub</h3><p class="muted">Connexion Discord, progression, coffres, Wallet, événements et Boutique points dans une application installable depuis le Web.</p></div>
+        <button id="installAppBtn" class="btn btn-primary btn-lg" ${installed ? "disabled" : ""}>${buttonText}</button>
+      </article>
+      <div class="grid grid-2 install-guide-grid">
+        <article class="card"><h3>💻 Chrome / Edge sur Windows</h3><div class="admin-list"><div>1. Ouvre ton site OpiumStore.</div><div>2. Clique sur <b>Installer OpiumStore</b>.</div><div>3. Si le bouton n’apparaît pas, ouvre le menu ⋮ puis choisis <b>Installer cette page en tant qu’application</b>.</div><div>4. L’application sera disponible dans le menu Démarrer et sur le bureau selon ton choix.</div></div></article>
+        <article class="card"><h3>📱 Android / iPhone</h3><div class="admin-list"><div><b>Android :</b> Chrome → menu ⋮ → Installer l’application.</div><div><b>iPhone :</b> Safari → bouton Partager → Sur l’écran d’accueil.</div><div>Une fois installée, ouvre-la depuis son icône comme une application normale.</div></div></article>
+      </div>
+    </section>`;
+  }
+
   function progressionPage() {
     const data = state.progression || {};
     const p = data.profile || {};
@@ -423,7 +477,7 @@
     return `<section class="page">
       <div class="section-head"><div><span class="eyebrow">NIVEAUX ET XP</span><h2>Ta progression</h2><p>Gagne de l’XP avec toutes les activités du Hub et débloque des récompenses de niveaux.</p></div><span class="badge badge-yellow">⭐ ${formatNumber(p.xp_total || 0)} XP</span></div>
       <div class="grid grid-2">${xpCard()}<article class="card streak-card"><div class="streak-flame">🔥</div><div><span class="eyebrow">SÉRIE DE CONNEXION</span><h3>${formatNumber(p.streak_current || 0)} jour(s)</h3><p>Meilleur record : <b>${formatNumber(p.streak_best || 0)} jour(s)</b></p></div><button class="btn btn-green" data-claim-daily ${daily.can_claim ? "" : "disabled"}>${daily.can_claim ? `Récupérer ${formatNumber(daily.next_points)} pts + ${formatNumber(daily.next_xp)} XP` : "Récompense déjà récupérée"}</button></article></div>
-      <section class="section"><div class="section-head"><div><h2>Code promo</h2><p>Utilise un code une seule fois par compte.</p></div></div><article class="card promo-card"><input id="promoCodeInput" class="input" placeholder="ENTRE TON CODE"><button class="btn btn-primary" data-redeem-promo>Utiliser le code</button></article></section>
+      <section class="section"><article class="card promo-card promo-card-link"><div><h3>🎟️ Tu as un code promo ?</h3><p class="muted">Ouvre la page dédiée pour récupérer tes points, ton XP ou ton coffre.</p></div><button class="btn btn-primary" data-page="promo">Utiliser un code</button></article></section>
       <section class="section"><div class="section-head"><div><h2>Missions hebdomadaires</h2><p>La progression repart chaque semaine.</p></div></div><div class="mission-grid">${weekly.map(missionCard).join("") || '<div class="empty">Aucune mission hebdomadaire.</div>'}</div></section>
       <section class="section"><div class="section-head"><div><h2>Missions classiques</h2><p>Des objectifs permanents pour avancer à ton rythme.</p></div></div><div class="mission-grid">${classic.map(missionCard).join("") || '<div class="empty">Aucune mission classique.</div>'}</div></section>
     </section>`;
@@ -709,11 +763,13 @@
     if (!state.me || !state.catalog || !state.progression) return;
     setUserChrome();
     $$('[data-page]').forEach(el => el.classList.toggle("active", el.dataset.page === state.page));
-    const titles = {home:"Accueil",generator:"Générateur",vip:"VIP & offres",shop:"Boutique points",wheel:"Roue",progression:"Progression",leaderboards:"Classements",events:"Événements",wallet:"Wallet & inventaire",admin:"Administration"};
+    const titles = {home:"Accueil",generator:"Générateur",vip:"VIP & offres",shop:"Boutique points",promo:"Code promo",wheel:"Roue",progression:"Progression",leaderboards:"Classements",events:"Événements",wallet:"Wallet & inventaire",appinstall:"Installer l’application",admin:"Administration"};
     $("#pageTitle").textContent = titles[state.page] || "OpiumStore Hub";
     if (state.page === "generator") main.innerHTML = generatorPage();
     else if (state.page === "vip") main.innerHTML = vipPage();
     else if (state.page === "shop") main.innerHTML = shopPage();
+    else if (state.page === "promo") main.innerHTML = promoPage();
+    else if (state.page === "appinstall") main.innerHTML = appInstallPage();
     else if (state.page === "wheel") main.innerHTML = wheelPage();
     else if (state.page === "progression") main.innerHTML = progressionPage();
     else if (state.page === "leaderboards") main.innerHTML = leaderboardsPage();
@@ -1035,6 +1091,7 @@
       await saveUserTimer({discordId:$("#timerDiscordId").value,type:$("#timerType").value,serviceId:$("#timerService").value,seconds:$("#timerSeconds").value});
       return;
     }
+    if (event.target.id === "installAppBtn") { await installApplication(); return; }
     if (event.target.id === "spinBtn") { await handleSpin(); return; }
     if (event.target.id === "createCommunityEventBtn") {
       const days=Math.max(1,Number($("#newEventDays").value||7));
@@ -1060,6 +1117,26 @@
     }
   });
 
+  document.addEventListener("keydown", async (event) => {
+    if (event.key !== "Enter" || event.target?.id !== "promoCodeInput") return;
+    event.preventDefault();
+    const code = String(event.target.value || "").trim();
+    if (!code) return showToast("Entre un code promo.", true);
+    await progressionAction("/api/promo/redeem", {code}, "Code promo utilisé");
+  });
+
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    state.installPrompt = event;
+    if (state.page === "appinstall") render();
+  });
+  window.addEventListener("appinstalled", () => {
+    state.installPrompt = null;
+    state.appInstalled = true;
+    showToast("OpiumStore a été installé avec succès.");
+    if (state.page === "appinstall") render();
+  });
+
   $("#discordLoginBtn").addEventListener("click", () => {
     if (!API_BASE || API_BASE.includes("YOUR-WORKER")) return showToast("Configure API_BASE dans config.js.", true);
     location.href = `${API_BASE}/auth/discord/start`;
@@ -1075,6 +1152,7 @@
 
   async function init() {
     try {
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(error => console.warn("Service Worker:", error));
       await exchangeAuthCode();
       if (!state.token) return showLogin();
       await loadBaseData();

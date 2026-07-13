@@ -1,0 +1,31 @@
+{
+  "id": "./",
+  "name": "OpiumStore Hub",
+  "short_name": "OpiumStore",
+  "description": "Hub OpiumStore avec progression, coffres, Wallet, événements et connexion Discord.",
+  "lang": "fr-BE",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#030712",
+  "theme_color": "#030712",
+  "categories": [
+    "utilities",
+    "entertainment"
+  ],
+  "icons": [
+    {
+      "src": "assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

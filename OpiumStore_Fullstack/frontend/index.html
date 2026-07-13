@@ -8,8 +8,13 @@
   <title>OpiumStore Hub</title>
   <meta name="description" content="OpiumStore Hub — connexion Discord, générateur FIFO, boutique à points et panel admin.">
   <link rel="icon" href="assets/logo.png" type="image/png">
+  <link rel="manifest" href="manifest.webmanifest?v=20260713-v73">
+  <link rel="apple-touch-icon" href="assets/icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="OpiumStore">
   <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="progression.css?v=20260713-v72">
+  <link rel="stylesheet" href="progression.css?v=20260713-v73">
 </head>
 <body>
   <div id="boot" class="boot-screen">
@@ -55,11 +60,13 @@
         <button class="nav-item" data-page="generator"><span>⚡</span>Générateur</button>
         <button class="nav-item" data-page="vip"><span>👑</span>VIP & offres</button>
         <button class="nav-item" data-page="shop"><span>🎁</span>Boutique points</button>
+        <button class="nav-item" data-page="promo"><span>🎟️</span>Code promo</button>
         <button class="nav-item" data-page="wheel"><span>🎡</span>Roue</button>
         <button class="nav-item" data-page="progression"><span>⭐</span>Progression</button>
         <button class="nav-item" data-page="leaderboards"><span>🏆</span>Classements</button>
         <button class="nav-item" data-page="events"><span>🌍</span>Événements</button>
         <button class="nav-item" data-page="wallet"><span>▰</span>Wallet & inventaire</button>
+        <button class="nav-item nav-item-install" data-page="appinstall"><span>⬇️</span>Installer l’application</button>
         <button id="adminNav" class="nav-item hidden" data-page="admin"><span>🛡</span>Administration</button>
       </nav>
 
@@ -94,6 +101,6 @@
   </div>
 
   <script src="config.js?v=20260713-7"></script>
-  <script src="app.js?v=20260713-v72" defer></script>
+  <script src="app.js?v=20260713-v73" defer></script>
 </body>
 </html>
