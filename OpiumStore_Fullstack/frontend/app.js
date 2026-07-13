@@ -3,7 +3,7 @@
 
   const config = window.OPIUM_CONFIG || {};
   const API_BASE = String(config.API_BASE || "").replace(/\/$/, "");
-  const AUTOSHOP_URL = config.AUTOSHOP_URL || "https://opiumshop.onrender.com/";
+  const AUTOSHOP_URL = "https://opium-store.opiumstore.workers.dev/";
   const DISCORD_URL = config.DISCORD_URL || config.SUPPORT_URL || "";
   const TOKEN_KEY = "opium_store_session";
 

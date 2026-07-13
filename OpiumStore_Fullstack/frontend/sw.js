@@ -1,12 +1,12 @@
-const CACHE_NAME = "opiumstore-v73";
+const CACHE_NAME = "opiumstore-v74";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
-  "./progression.css?v=20260713-v73",
-  "./app.js?v=20260713-v73",
+  "./progression.css?v=20260713-v74",
+  "./app.js?v=20260713-v74",
   "./config.js?v=20260713-7",
-  "./manifest.webmanifest?v=20260713-v73",
+  "./manifest.webmanifest?v=20260713-v74",
   "./assets/logo.png",
   "./assets/icon-192.png",
   "./assets/icon-512.png"
