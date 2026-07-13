@@ -60,3 +60,24 @@
 @keyframes reward-rays{to{transform:rotate(360deg)}}
 @keyframes reward-legendary{0%{transform:scale(.2) rotate(-30deg);opacity:0}45%{transform:scale(1.35) rotate(10deg)}65%{transform:scale(.9) rotate(-4deg)}100%{transform:scale(1);opacity:1}}
 @keyframes reward-event{0%{transform:translateY(30px) scale(.4);opacity:0}55%{transform:translateY(-12px) scale(1.18)}100%{transform:translateY(0) scale(1);opacity:1}}
+
+
+/* V7.2 — navigation gauche défilable */
+.sidebar{overflow:hidden}
+.sidebar>.brand,.sidebar>.user-card,.sidebar>.logout-btn{flex:0 0 auto}
+.side-nav{min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-gutter:stable;padding-right:6px;padding-bottom:8px}
+.side-nav::-webkit-scrollbar{width:8px}
+.side-nav::-webkit-scrollbar-track{background:rgba(255,255,255,.025);border-radius:999px}
+.side-nav::-webkit-scrollbar-thumb{background:linear-gradient(180deg,rgba(56,189,248,.5),rgba(37,99,235,.5));border-radius:999px;border:2px solid rgba(3,9,20,.75)}
+.side-nav{scrollbar-width:thin;scrollbar-color:rgba(56,189,248,.5) rgba(255,255,255,.025)}
+.nav-item-featured{flex:0 0 auto;background:linear-gradient(90deg,rgba(168,85,247,.24),rgba(37,99,235,.12));color:#f3e8ff;border:1px solid rgba(192,132,252,.22);margin-bottom:4px}
+.nav-item-featured:hover{background:linear-gradient(90deg,rgba(168,85,247,.34),rgba(37,99,235,.18))}
+.nav-divider{height:1px;background:linear-gradient(90deg,transparent,rgba(125,211,252,.18),transparent);margin:5px 5px 7px;flex:0 0 auto}
+.admin-card h4{margin:0 0 12px;font-size:15px}
+.admin-card .status-line{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:13px}
+.admin-card .status-line code{font-size:11px;color:#7dd3fc;word-break:break-all}
+.admin-card .check-row{display:flex;align-items:center;gap:9px;min-height:45px;padding:0 4px;color:#cbd5e1;font-size:13px;font-weight:800}
+.admin-card .check-row input{width:18px;height:18px;accent-color:#0ea5e9}
+.admin-section-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:8px 0 0;padding:5px 2px}
+.admin-section-title h3{margin:0}.admin-section-title p{margin:3px 0 0}
+@media(max-height:760px){.sidebar{padding-top:14px;padding-bottom:14px}.brand{padding-bottom:12px}.user-card{margin-bottom:10px}.nav-item{padding-top:10px;padding-bottom:10px}}

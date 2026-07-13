@@ -48,6 +48,33 @@
     return new Date(Number(value)).toLocaleString("fr-BE", {day:"2-digit", month:"2-digit", year:"numeric", hour:"2-digit", minute:"2-digit"});
   }
 
+  function datetimeLocalValue(value) {
+    const date = new Date(Number(value || Date.now()));
+    const offset = date.getTimezoneOffset() * 60000;
+    return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+  }
+
+  function datetimeInputValue(id) {
+    const value = document.getElementById(id)?.value;
+    return value ? new Date(value).getTime() : 0;
+  }
+
+  function activityOptions(selected = "generation", includeAny = true) {
+    const options = [
+      ["generation", "Générations"], ["purchase", "Achats boutique"], ["wheel", "Roue"],
+      ["chest_open", "Ouverture de coffres"], ["daily_claim", "Récompenses quotidiennes"],
+      ["promo", "Codes promos"], ["mission_claim", "Missions récupérées"],
+      ["community_claim", "Récompenses d’événement"]
+    ];
+    if (includeAny) options.push(["any", "Toutes les activités"]);
+    return options.map(([value,label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`).join("");
+  }
+
+  function itemRewardOptions(selected = "") {
+    const items = state.admin?.item_catalog || [];
+    return `<option value="">Aucun objet</option>${items.map(item => `<option value="${escapeHtml(item.item_key)}" ${item.item_key === selected ? "selected" : ""}>${escapeHtml(item.emoji)} ${escapeHtml(item.name)} — ${escapeHtml(item.item_key)}</option>`).join("")}`;
+  }
+
   function remaining(seconds) {
     const s = Math.max(0, Math.ceil(Number(seconds || 0)));
     if (s < 60) return `${s} s`;
@@ -302,18 +329,20 @@
   }
 
   function productCard(p) {
-    return `<article class="card product-card">
+    const infinite = p.infinite_stock === true || Number(p.stock) < 0;
+    const unavailable = !infinite && Number(p.stock) <= 0;
+    return `<article class="card product-card ${p.item_key ? `rarity-${escapeHtml(p.rarity || "common")}` : ""}">
       <div class="product-top"><div class="emoji-box">${escapeHtml(p.emoji)}</div><span class="badge badge-yellow">${formatNumber(p.price)} pts</span></div>
       <div><h3>${escapeHtml(p.name)}</h3><p class="muted">${escapeHtml(p.description || "Récompense numérique.")}</p></div>
-      <span class="stock">${formatNumber(p.stock)} ligne(s) disponible(s)</span>
-      <button class="btn btn-primary" data-buy="${escapeHtml(p.id)}" ${p.stock <= 0 || state.me.points < p.price ? "disabled" : ""}>${p.stock <= 0 ? "Rupture de stock" : state.me.points < p.price ? "Points insuffisants" : "Acheter"}</button>
+      <span class="stock">${infinite ? "∞ Stock illimité" : `${formatNumber(p.stock)} ligne(s) disponible(s)`}</span>
+      <button class="btn btn-primary" data-buy="${escapeHtml(p.id)}" ${unavailable || state.me.points < p.price ? "disabled" : ""}>${unavailable ? "Rupture de stock" : state.me.points < p.price ? "Points insuffisants" : p.item_key ? "Acheter le coffre" : "Acheter"}</button>
     </article>`;
   }
 
   function shopPage() {
     return `<section class="page">
       <div class="section-head"><div><span class="eyebrow">BOUTIQUE POINTS</span><h2>Récompenses</h2><p>Chaque achat distribue la prochaine phrase ou ligne disponible.</p></div><div class="points-pill"><span>◈</span><b>${formatNumber(state.me.points)}</b><small>pts</small></div></div>
-      ${state.purchaseResult ? `<div class="line-result"><b>Achat réussi :</b><div class="secret-line">${escapeHtml(state.purchaseResult.value)}</div><button class="btn btn-green" data-copy="${escapeHtml(state.purchaseResult.value)}">Copier la récompense</button></div>` : ""}
+      ${state.purchaseResult ? `<div class="line-result"><b>Achat réussi :</b><div class="secret-line">${escapeHtml(state.purchaseResult.value)}</div>${state.purchaseResult.kind === "inventory" ? `<button class="btn btn-green" data-page="wallet">Voir dans le Wallet</button>` : `<button class="btn btn-green" data-copy="${escapeHtml(state.purchaseResult.value)}">Copier la récompense</button>`}</div>` : ""}
       <div class="grid grid-3">${(state.catalog?.products || []).map(productCard).join("") || '<div class="empty">Aucune récompense en vente.</div>'}</div>
     </section>`;
   }
@@ -466,9 +495,70 @@
   }
 
   function adminProgression() {
+    const events = state.admin.community_events || [];
+    const missions = state.admin.missions || [];
     return `<div class="admin-list">
-      <article class="admin-card"><h3>🌍 Créer un événement communautaire</h3><div class="form-grid"><div class="field"><label>Titre</label><input id="newEventTitle" class="input" placeholder="Objectif communautaire"></div><div class="field"><label>Activité</label><select id="newEventActivity" class="input"><option value="generation">Générations</option><option value="purchase">Achats</option><option value="wheel">Roue</option><option value="chest_open">Coffres</option><option value="daily_claim">Récompenses quotidiennes</option><option value="any">Toutes les activités</option></select></div><div class="field"><label>Objectif</label><input id="newEventTarget" class="input" type="number" min="1" value="100"></div><div class="field"><label>Durée (jours)</label><input id="newEventDays" class="input" type="number" min="1" value="7"></div><div class="field"><label>Points</label><input id="newEventPoints" class="input" type="number" min="0" value="500"></div><div class="field"><label>XP</label><input id="newEventXp" class="input" type="number" min="0" value="350"></div></div><div class="field" style="margin-top:12px"><label>Description</label><input id="newEventDescription" class="input" placeholder="Description de l’événement"></div><button id="createCommunityEventBtn" class="btn btn-primary" style="margin-top:13px">Créer l’événement</button></article>
-      <article class="admin-card"><h3>🎟️ Créer un code promo</h3><div class="form-grid"><div class="field"><label>Code</label><input id="newPromoCode" class="input" placeholder="OPIUM2026"></div><div class="field"><label>Utilisations max (0 = illimité)</label><input id="newPromoUses" class="input" type="number" min="0" value="100"></div><div class="field"><label>Points</label><input id="newPromoPoints" class="input" type="number" min="0" value="250"></div><div class="field"><label>XP</label><input id="newPromoXp" class="input" type="number" min="0" value="150"></div><div class="field"><label>Objet facultatif</label><input id="newPromoItem" class="input" placeholder="chest_common"></div><div class="field"><label>Description</label><input id="newPromoDescription" class="input" placeholder="Code communautaire"></div></div><button id="createPromoCodeBtn" class="btn btn-primary" style="margin-top:13px">Créer le code</button></article>
+      <div class="admin-section-title"><div><h3>🌍 Événements communautaires</h3><p class="muted">Crée et modifie les objectifs visibles par toute la communauté.</p></div><span class="badge badge-green">${formatNumber(events.length)} événement(s)</span></div>
+      <article class="admin-card"><h4>Créer un événement</h4><div class="form-grid">
+        <div class="field"><label>Titre</label><input id="newEventTitle" class="input" placeholder="Objectif communautaire"></div>
+        <div class="field"><label>Emoji</label><input id="newEventEmoji" class="input" value="🌍"></div>
+        <div class="field"><label>Activité</label><select id="newEventActivity" class="input">${activityOptions("generation", true)}</select></div>
+        <div class="field"><label>Objectif</label><input id="newEventTarget" class="input" type="number" min="1" value="100"></div>
+        <div class="field"><label>Durée (jours)</label><input id="newEventDays" class="input" type="number" min="1" value="7"></div>
+        <div class="field"><label>Points</label><input id="newEventPoints" class="input" type="number" min="0" value="500"></div>
+        <div class="field"><label>XP</label><input id="newEventXp" class="input" type="number" min="0" value="350"></div>
+        <div class="field"><label>Objet offert</label><select id="newEventItem" class="input">${itemRewardOptions("")}</select></div>
+      </div><div class="field" style="margin-top:12px"><label>Description</label><input id="newEventDescription" class="input" placeholder="Description de l’événement"></div><button id="createCommunityEventBtn" class="btn btn-primary" style="margin-top:13px">Créer l’événement</button></article>
+
+      ${events.map(event => `<article class="admin-card">
+        <div class="status-line"><div><h4>${escapeHtml(event.emoji)} ${escapeHtml(event.title)}</h4><code>${escapeHtml(event.id)}</code></div><span class="badge ${event.active ? "badge-green" : "badge-red"}">${event.active ? "Actif" : "Désactivé"} · ${formatNumber(event.progress)} / ${formatNumber(event.target)}</span></div>
+        <div class="form-grid">
+          <div class="field"><label>Titre</label><input id="event-title-${event.id}" class="input" value="${escapeHtml(event.title)}"></div>
+          <div class="field"><label>Emoji</label><input id="event-emoji-${event.id}" class="input" value="${escapeHtml(event.emoji)}"></div>
+          <div class="field"><label>Activité</label><select id="event-activity-${event.id}" class="input">${activityOptions(event.activity_type, true)}</select></div>
+          <div class="field"><label>Objectif</label><input id="event-target-${event.id}" class="input" type="number" min="1" value="${event.target}"></div>
+          <div class="field"><label>Début</label><input id="event-start-${event.id}" class="input" type="datetime-local" value="${datetimeLocalValue(event.starts_at)}"></div>
+          <div class="field"><label>Fin</label><input id="event-end-${event.id}" class="input" type="datetime-local" value="${datetimeLocalValue(event.ends_at)}"></div>
+          <div class="field"><label>Points</label><input id="event-points-${event.id}" class="input" type="number" min="0" value="${event.reward_points}"></div>
+          <div class="field"><label>XP</label><input id="event-xp-${event.id}" class="input" type="number" min="0" value="${event.reward_xp}"></div>
+          <div class="field"><label>Objet offert</label><select id="event-item-${event.id}" class="input">${itemRewardOptions(event.reward_item_key || "")}</select></div>
+          <label class="check-row"><input id="event-active-${event.id}" type="checkbox" ${event.active ? "checked" : ""}> Événement actif</label>
+        </div>
+        <div class="field" style="margin-top:12px"><label>Description</label><textarea id="event-description-${event.id}" class="textarea" style="min-height:90px">${escapeHtml(event.description || "")}</textarea></div>
+        <div class="admin-actions"><button class="btn btn-primary btn-small" data-save-community-event="${escapeHtml(event.id)}">Enregistrer</button><button class="btn btn-secondary btn-small" data-reset-community-event="${escapeHtml(event.id)}">Remettre la progression à 0</button><button class="btn btn-red btn-small" data-delete-community-event="${escapeHtml(event.id)}">Supprimer</button></div>
+      </article>`).join("") || '<div class="empty">Aucun événement enregistré.</div>'}
+
+      <div class="admin-section-title"><div><h3>🏆 Quêtes et missions</h3><p class="muted">Modifie les objectifs classiques et hebdomadaires ainsi que leurs récompenses.</p></div><span class="badge badge-yellow">${formatNumber(missions.length)} quête(s)</span></div>
+      <article class="admin-card"><h4>Créer une quête</h4><div class="form-grid">
+        <div class="field"><label>Titre</label><input id="newMissionTitle" class="input" placeholder="Nouvelle quête"></div>
+        <div class="field"><label>Type</label><select id="newMissionScope" class="input"><option value="classic">Classique</option><option value="weekly">Hebdomadaire</option></select></div>
+        <div class="field"><label>Activité</label><select id="newMissionActivity" class="input">${activityOptions("generation", true)}</select></div>
+        <div class="field"><label>Objectif</label><input id="newMissionTarget" class="input" type="number" min="1" value="5"></div>
+        <div class="field"><label>Points</label><input id="newMissionPoints" class="input" type="number" min="0" value="150"></div>
+        <div class="field"><label>XP</label><input id="newMissionXp" class="input" type="number" min="0" value="100"></div>
+        <div class="field"><label>Objet offert</label><select id="newMissionItem" class="input">${itemRewardOptions("")}</select></div>
+        <div class="field"><label>Ordre</label><input id="newMissionOrder" class="input" type="number" value="100"></div>
+      </div><div class="field" style="margin-top:12px"><label>Description</label><input id="newMissionDescription" class="input" placeholder="Description de la quête"></div><button id="createMissionBtn" class="btn btn-primary" style="margin-top:13px">Créer la quête</button></article>
+
+      ${missions.map(mission => `<article class="admin-card">
+        <div class="status-line"><div><h4>${mission.scope === "weekly" ? "📅" : "🎯"} ${escapeHtml(mission.title)}</h4><code>${escapeHtml(mission.id)}</code></div><span class="badge ${mission.active ? "badge-green" : "badge-red"}">${mission.active ? "Active" : "Désactivée"} · ${mission.scope === "weekly" ? "Hebdomadaire" : "Classique"}</span></div>
+        <div class="form-grid">
+          <div class="field"><label>Titre</label><input id="mission-title-${mission.id}" class="input" value="${escapeHtml(mission.title)}"></div>
+          <div class="field"><label>Type</label><select id="mission-scope-${mission.id}" class="input"><option value="classic" ${mission.scope === "classic" ? "selected" : ""}>Classique</option><option value="weekly" ${mission.scope === "weekly" ? "selected" : ""}>Hebdomadaire</option></select></div>
+          <div class="field"><label>Activité</label><select id="mission-activity-${mission.id}" class="input">${activityOptions(mission.activity_type, true)}</select></div>
+          <div class="field"><label>Objectif</label><input id="mission-target-${mission.id}" class="input" type="number" min="1" value="${mission.target}"></div>
+          <div class="field"><label>Points</label><input id="mission-points-${mission.id}" class="input" type="number" min="0" value="${mission.reward_points}"></div>
+          <div class="field"><label>XP</label><input id="mission-xp-${mission.id}" class="input" type="number" min="0" value="${mission.reward_xp}"></div>
+          <div class="field"><label>Objet offert</label><select id="mission-item-${mission.id}" class="input">${itemRewardOptions(mission.reward_item_key || "")}</select></div>
+          <div class="field"><label>Ordre</label><input id="mission-order-${mission.id}" class="input" type="number" value="${mission.sort_order}"></div>
+          <label class="check-row"><input id="mission-active-${mission.id}" type="checkbox" ${mission.active ? "checked" : ""}> Quête active</label>
+        </div>
+        <div class="field" style="margin-top:12px"><label>Description</label><textarea id="mission-description-${mission.id}" class="textarea" style="min-height:90px">${escapeHtml(mission.description || "")}</textarea></div>
+        <div class="admin-actions"><button class="btn btn-primary btn-small" data-save-mission="${escapeHtml(mission.id)}">Enregistrer</button><button class="btn btn-secondary btn-small" data-reset-mission="${escapeHtml(mission.id)}">Réinitialiser les progressions</button><button class="btn btn-red btn-small" data-delete-mission="${escapeHtml(mission.id)}">Supprimer</button></div>
+      </article>`).join("") || '<div class="empty">Aucune quête enregistrée.</div>'}
+
+      <div class="admin-section-title"><div><h3>🎟️ Codes promos</h3><p class="muted">Crée un code utilisable une fois par membre.</p></div></div>
+      <article class="admin-card"><div class="form-grid"><div class="field"><label>Code</label><input id="newPromoCode" class="input" placeholder="OPIUM2026"></div><div class="field"><label>Utilisations max (0 = illimité)</label><input id="newPromoUses" class="input" type="number" min="0" value="100"></div><div class="field"><label>Points</label><input id="newPromoPoints" class="input" type="number" min="0" value="250"></div><div class="field"><label>XP</label><input id="newPromoXp" class="input" type="number" min="0" value="150"></div><div class="field"><label>Objet facultatif</label><select id="newPromoItem" class="input">${itemRewardOptions("")}</select></div><div class="field"><label>Description</label><input id="newPromoDescription" class="input" placeholder="Code communautaire"></div></div><button id="createPromoCodeBtn" class="btn btn-primary" style="margin-top:13px">Créer le code</button></article>
     </div>`;
   }
 
@@ -696,7 +786,7 @@
     try {
       const result = await api("/api/shop/purchase", {method:"POST", body:JSON.stringify({product_id:productId})});
       state.purchaseResult = result.purchase;
-      showToast("Achat réussi. La prochaine ligne du stock t’a été livrée.");
+      showToast(result.purchase?.kind === "inventory" ? "Coffre acheté : il a été ajouté à ton inventaire." : "Achat réussi. La prochaine ligne du stock t’a été livrée.");
       await refreshAll(false);
       state.page = "shop";
       render();
@@ -806,6 +896,44 @@
       return adminRequest(`/api/admin/wheel/${wid}`, "PUT", {emoji:$(`#wheel-emoji-${wid}`).value,label:$(`#wheel-label-${wid}`).value,points:Number($(`#wheel-points-${wid}`).value),weight:Number($(`#wheel-weight-${wid}`).value)}, "Gain enregistré.");
     }
     if (target.dataset.deleteWheel) return confirm("Supprimer ce gain ?") && adminRequest(`/api/admin/wheel/${target.dataset.deleteWheel}`, "DELETE", undefined, "Gain supprimé.");
+
+    if (target.dataset.saveCommunityEvent) {
+      const eid = target.dataset.saveCommunityEvent;
+      return adminRequest(`/api/admin/community-events/${encodeURIComponent(eid)}`, "PUT", {
+        title:document.getElementById(`event-title-${eid}`).value,
+        emoji:document.getElementById(`event-emoji-${eid}`).value,
+        description:document.getElementById(`event-description-${eid}`).value,
+        activity_type:document.getElementById(`event-activity-${eid}`).value,
+        target:Number(document.getElementById(`event-target-${eid}`).value),
+        starts_at:datetimeInputValue(`event-start-${eid}`),
+        ends_at:datetimeInputValue(`event-end-${eid}`),
+        reward_points:Number(document.getElementById(`event-points-${eid}`).value),
+        reward_xp:Number(document.getElementById(`event-xp-${eid}`).value),
+        reward_item_key:document.getElementById(`event-item-${eid}`).value || null,
+        active:document.getElementById(`event-active-${eid}`).checked
+      }, "Événement communautaire enregistré.");
+    }
+    if (target.dataset.resetCommunityEvent) return confirm("Remettre la progression et toutes les contributions de cet événement à zéro ?") && adminRequest(`/api/admin/community-events/${encodeURIComponent(target.dataset.resetCommunityEvent)}/reset`, "POST", {}, "Progression de l’événement réinitialisée.");
+    if (target.dataset.deleteCommunityEvent) return confirm("Supprimer définitivement cet événement et ses contributions ?") && adminRequest(`/api/admin/community-events/${encodeURIComponent(target.dataset.deleteCommunityEvent)}`, "DELETE", undefined, "Événement supprimé.");
+
+    if (target.dataset.saveMission) {
+      const mid = target.dataset.saveMission;
+      return adminRequest(`/api/admin/missions/${encodeURIComponent(mid)}`, "PUT", {
+        title:document.getElementById(`mission-title-${mid}`).value,
+        scope:document.getElementById(`mission-scope-${mid}`).value,
+        description:document.getElementById(`mission-description-${mid}`).value,
+        activity_type:document.getElementById(`mission-activity-${mid}`).value,
+        target:Number(document.getElementById(`mission-target-${mid}`).value),
+        reward_points:Number(document.getElementById(`mission-points-${mid}`).value),
+        reward_xp:Number(document.getElementById(`mission-xp-${mid}`).value),
+        reward_item_key:document.getElementById(`mission-item-${mid}`).value || null,
+        sort_order:Number(document.getElementById(`mission-order-${mid}`).value),
+        active:document.getElementById(`mission-active-${mid}`).checked
+      }, "Quête enregistrée.");
+    }
+    if (target.dataset.resetMission) return confirm("Réinitialiser la progression de cette quête pour tous les membres ?") && adminRequest(`/api/admin/missions/${encodeURIComponent(target.dataset.resetMission)}/reset`, "POST", {}, "Progressions de la quête réinitialisées.");
+    if (target.dataset.deleteMission) return confirm("Supprimer définitivement cette quête et toutes ses progressions ?") && adminRequest(`/api/admin/missions/${encodeURIComponent(target.dataset.deleteMission)}`, "DELETE", undefined, "Quête supprimée.");
+
     if (target.dataset.userPoints) return adminRequest(`/api/admin/users/${target.dataset.userPoints}/points`, "POST", {delta:Number($(`#user-points-${target.dataset.userPoints}`).value)}, "Points ajustés.");
     if (target.dataset.userGenTime) {
       const discordId = target.dataset.userGenTime;
@@ -901,7 +1029,7 @@
       await saveUserTimer({discordId:resetTimer.dataset.timerUser,type:resetTimer.dataset.timerType,serviceId:resetTimer.dataset.timerService || "",seconds:0});
       return;
     }
-    const adminAction = event.target.closest("[data-save-service],[data-restock-service],[data-clear-service],[data-delete-service],[data-toggle-service],[data-save-product],[data-restock-product],[data-clear-product],[data-delete-product],[data-toggle-product],[data-save-wheel],[data-delete-wheel],[data-user-points],[data-user-gen-time],[data-user-daily-limit]");
+    const adminAction = event.target.closest("[data-save-service],[data-restock-service],[data-clear-service],[data-delete-service],[data-toggle-service],[data-save-product],[data-restock-product],[data-clear-product],[data-delete-product],[data-toggle-product],[data-save-wheel],[data-delete-wheel],[data-save-community-event],[data-reset-community-event],[data-delete-community-event],[data-save-mission],[data-reset-mission],[data-delete-mission],[data-user-points],[data-user-gen-time],[data-user-daily-limit]");
     if (adminAction) { await handleAdminAction(adminAction); return; }
     if (event.target.id === "applyUserTimerBtn") {
       await saveUserTimer({discordId:$("#timerDiscordId").value,type:$("#timerType").value,serviceId:$("#timerService").value,seconds:$("#timerSeconds").value});
@@ -910,7 +1038,10 @@
     if (event.target.id === "spinBtn") { await handleSpin(); return; }
     if (event.target.id === "createCommunityEventBtn") {
       const days=Math.max(1,Number($("#newEventDays").value||7));
-      await adminRequest("/api/admin/community-events", "POST", {title:$("#newEventTitle").value,description:$("#newEventDescription").value,activity_type:$("#newEventActivity").value,target:Number($("#newEventTarget").value),reward_points:Number($("#newEventPoints").value),reward_xp:Number($("#newEventXp").value),ends_at:Date.now()+days*86400000}, "Événement créé."); return;
+      await adminRequest("/api/admin/community-events", "POST", {title:$("#newEventTitle").value,emoji:$("#newEventEmoji").value,description:$("#newEventDescription").value,activity_type:$("#newEventActivity").value,target:Number($("#newEventTarget").value),reward_points:Number($("#newEventPoints").value),reward_xp:Number($("#newEventXp").value),reward_item_key:$("#newEventItem").value||null,ends_at:Date.now()+days*86400000}, "Événement créé."); return;
+    }
+    if (event.target.id === "createMissionBtn") {
+      await adminRequest("/api/admin/missions", "POST", {title:$("#newMissionTitle").value,scope:$("#newMissionScope").value,description:$("#newMissionDescription").value,activity_type:$("#newMissionActivity").value,target:Number($("#newMissionTarget").value),reward_points:Number($("#newMissionPoints").value),reward_xp:Number($("#newMissionXp").value),reward_item_key:$("#newMissionItem").value||null,sort_order:Number($("#newMissionOrder").value),active:true}, "Quête créée."); return;
     }
     if (event.target.id === "createPromoCodeBtn") {
       await adminRequest("/api/admin/promo-codes", "POST", {code:$("#newPromoCode").value,description:$("#newPromoDescription").value,max_uses:Number($("#newPromoUses").value),reward_points:Number($("#newPromoPoints").value),reward_xp:Number($("#newPromoXp").value),reward_item_key:String($("#newPromoItem").value||"").trim()||null}, "Code promo créé."); return;

@@ -9,7 +9,7 @@
   <meta name="description" content="OpiumStore Hub — connexion Discord, générateur FIFO, boutique à points et panel admin.">
   <link rel="icon" href="assets/logo.png" type="image/png">
   <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="progression.css?v=20260713-v7">
+  <link rel="stylesheet" href="progression.css?v=20260713-v72">
 </head>
 <body>
   <div id="boot" class="boot-screen">
@@ -48,7 +48,9 @@
         </div>
       </div>
 
-      <nav id="sideNav" class="side-nav">
+      <nav id="sideNav" class="side-nav" aria-label="Navigation principale">
+        <a id="autoshopLink" class="nav-item nav-item-featured" href="#" target="_blank" rel="noopener"><span>🛍</span>AutoShop ↗</a>
+        <div class="nav-divider" aria-hidden="true"></div>
         <button class="nav-item active" data-page="home"><span>⌂</span>Accueil</button>
         <button class="nav-item" data-page="generator"><span>⚡</span>Générateur</button>
         <button class="nav-item" data-page="vip"><span>👑</span>VIP & offres</button>
@@ -58,7 +60,6 @@
         <button class="nav-item" data-page="leaderboards"><span>🏆</span>Classements</button>
         <button class="nav-item" data-page="events"><span>🌍</span>Événements</button>
         <button class="nav-item" data-page="wallet"><span>▰</span>Wallet & inventaire</button>
-        <a id="autoshopLink" class="nav-item" href="#" target="_blank" rel="noopener"><span>🛍</span>AutoShop ↗</a>
         <button id="adminNav" class="nav-item hidden" data-page="admin"><span>🛡</span>Administration</button>
       </nav>
 
@@ -93,6 +94,6 @@
   </div>
 
   <script src="config.js?v=20260713-7"></script>
-  <script src="app.js?v=20260713-v7" defer></script>
+  <script src="app.js?v=20260713-v72" defer></script>
 </body>
 </html>

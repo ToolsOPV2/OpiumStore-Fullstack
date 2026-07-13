@@ -3,6 +3,14 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const LOGIN_CODE_TTL_MS = 2 * 60 * 1000;
 const OAUTH_STATE_TTL_SECONDS = 600;
 
+// Coffres virtuels de la Boutique points : stock illimité, aucun product_line requis.
+const POINT_SHOP_CHESTS = [
+  {id:"points-chest-common",item_key:"chest_common",rarity:"common",name:"Coffre commun",emoji:"📦",price:250,description:"Stock illimité · jusqu’à 119 points et 69 XP."},
+  {id:"points-chest-rare",item_key:"chest_rare",rarity:"rare",name:"Coffre rare",emoji:"🔷",price:750,description:"Stock illimité · jusqu’à 399 points et 199 XP."},
+  {id:"points-chest-epic",item_key:"chest_epic",rarity:"epic",name:"Coffre épique",emoji:"🟣",price:1500,description:"Stock illimité · jusqu’à 699 points et 400 XP."},
+  {id:"points-chest-legendary",item_key:"chest_legendary",rarity:"legendary",name:"Coffre légendaire",emoji:"🟡",price:3000,description:"Stock illimité · jusqu’à 1 499 points et 700 XP."}
+];
+
 export default {
   async fetch(request, env) {
     try {
@@ -10,7 +18,7 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
-      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"progression-v7"}, 200, env, request);
+      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"progression-v7.2"}, 200, env, request);
       if (path === "/auth/discord/start" && request.method === "GET") return await startDiscordAuth(env);
       if (path === "/auth/discord/callback" && request.method === "GET") return await discordCallback(request, env);
       if (path === "/auth/exchange" && request.method === "POST") return await exchangeLoginCode(request, env);
@@ -250,7 +258,7 @@ async function getCatalog(user, env, request) {
   const services = await env.DB.prepare(`SELECT s.id,s.name,s.emoji,s.description,s.cooldown_seconds,s.enabled,COUNT(i.id) AS stock,MAX(0,COALESCE(c.next_allowed_at,0)-?) AS cooldown_ms
     FROM services s LEFT JOIN inventory_lines i ON i.service_id=s.id LEFT JOIN generator_cooldowns c ON c.user_id=? AND c.service_id=s.id
     WHERE s.enabled=1 GROUP BY s.id ORDER BY s.created_at`).bind(now,user.id).all();
-  const products = await env.DB.prepare(`SELECT p.id,p.name,p.emoji,p.description,p.price,p.enabled,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id WHERE p.enabled=1 GROUP BY p.id ORDER BY p.created_at`).all();
+  const products = await env.DB.prepare(`SELECT p.id,p.name,p.emoji,p.description,p.price,p.enabled,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id WHERE p.enabled=1 AND p.id NOT LIKE 'points-chest-%' GROUP BY p.id ORDER BY p.created_at`).all();
   const wheel = await env.DB.prepare("SELECT id,emoji,label,points,weight FROM wheel_rewards ORDER BY created_at").all();
   const wheelCooldown = await env.DB.prepare("SELECT next_allowed_at FROM wheel_cooldowns WHERE user_id=?").bind(user.id).first();
   const summary = await env.DB.prepare(`SELECT
@@ -262,7 +270,10 @@ async function getCatalog(user, env, request) {
   const dailyGenerationRemaining = dailyGenerationLimit === 0 ? -1 : Math.max(0,dailyGenerationLimit-generationsToday);
   return json({
     services:services.results.map(s => ({...s,stock:Number(s.stock),cooldown_remaining:Math.ceil(Number(s.cooldown_ms)/1000)})),
-    products:products.results.map(p => ({...p,stock:Number(p.stock),price:Number(p.price)})),
+    products:[
+      ...POINT_SHOP_CHESTS.map(p => ({...p,stock:-1,infinite_stock:true,enabled:1})),
+      ...products.results.map(p => ({...p,stock:Number(p.stock),price:Number(p.price),infinite_stock:false}))
+    ],
     wheel_rewards:wheel.results.map(r => ({...r,points:Number(r.points),weight:Number(r.weight)})),
     wheel_cooldown_remaining:Math.ceil(Math.max(0,Number(wheelCooldown?.next_allowed_at || 0)-now)/1000),
     daily_generation_limit:dailyGenerationLimit,
@@ -404,6 +415,33 @@ async function generateLine(request, user, env) {
 
 async function purchaseProduct(request, user, env) {
   const {product_id} = await parseJson(request);
+  const virtualChest = POINT_SHOP_CHESTS.find(item => item.id === product_id);
+
+  if (virtualChest) {
+    const price = Number(virtualChest.price), now = Date.now();
+    const deducted = await env.DB.prepare("UPDATE users SET points=points-?,total_spent=total_spent+?,updated_at=? WHERE id=? AND points>=? RETURNING points")
+      .bind(price,price,now,user.id,price).first();
+    if (!deducted) throw httpError(409, "Points insuffisants.");
+
+    try {
+      // Ligne produit technique nécessaire pour respecter la clé étrangère de purchases.
+      await env.DB.prepare(`INSERT OR IGNORE INTO products(id,name,emoji,description,price,enabled,created_at,updated_at)
+        VALUES(?,?,?,?,?,0,?,?)`).bind(virtualChest.id,virtualChest.name,virtualChest.emoji,virtualChest.description,price,now,now).run();
+      await grantInventoryItem(user,virtualChest.item_key,1,env);
+      const id = crypto.randomUUID();
+      const message = `${virtualChest.name} ajouté à ton inventaire (stock illimité).`;
+      const encrypted = await encryptText(message,env);
+      await env.DB.prepare("INSERT INTO purchases(id,user_id,product_id,product_name,price,cipher_text,iv,created_at) VALUES(?,?,?,?,?,?,?,?)")
+        .bind(id,user.id,virtualChest.id,virtualChest.name,price,encrypted.cipher_text,encrypted.iv,now).run();
+      const progression = await recordActivity(user,"purchase",1,Number(await setting(env,"xp_purchase","35")),env,{product_id:virtualChest.id,product_name:virtualChest.name,price,item_key:virtualChest.item_key,infinite_stock:true});
+      return json({purchase:{id,kind:"inventory",item_key:virtualChest.item_key,title:virtualChest.name,value:message,price,created_at:now},points:Number(deducted.points),progression},200,env,request);
+    } catch (error) {
+      await env.DB.prepare("UPDATE users SET points=points+?,total_spent=MAX(0,total_spent-?),updated_at=? WHERE id=?")
+        .bind(price,price,Date.now(),user.id).run();
+      throw error;
+    }
+  }
+
   const product = await env.DB.prepare("SELECT * FROM products WHERE id=? AND enabled=1").bind(product_id).first();
   if (!product) throw httpError(404, "Récompense indisponible.");
   const price = Number(product.price), now = Date.now();
@@ -417,7 +455,7 @@ async function purchaseProduct(request, user, env) {
   const id = crypto.randomUUID();
   await env.DB.prepare("INSERT INTO purchases(id,user_id,product_id,product_name,price,cipher_text,iv,created_at) VALUES(?,?,?,?,?,?,?,?)").bind(id,user.id,product.id,product.name,price,line.cipher_text,line.iv,now).run();
   const progression = await recordActivity(user,"purchase",1,Number(await setting(env,"xp_purchase","35")),env,{product_id:product.id,product_name:product.name,price});
-  return json({purchase:{id,title:product.name,value:await decryptText(line.cipher_text,line.iv,env),price,created_at:now},points:Number(deducted.points),progression}, 200, env, request);
+  return json({purchase:{id,kind:"line",title:product.name,value:await decryptText(line.cipher_text,line.iv,env),price,created_at:now},points:Number(deducted.points),progression}, 200, env, request);
 }
 
 async function spinWheel(request, user, env) {
@@ -625,7 +663,7 @@ function missionPeriodKey(scope, timestamp = Date.now()) {
 }
 
 async function updateMissionProgress(user, activityType, amount, env) {
-  const missions = await env.DB.prepare("SELECT * FROM missions WHERE active=1 AND activity_type=? ORDER BY sort_order")
+  const missions = await env.DB.prepare("SELECT * FROM missions WHERE active=1 AND (activity_type=? OR activity_type='any') ORDER BY sort_order")
     .bind(activityType).all();
   const now = Date.now();
   for (const mission of missions.results || []) {
@@ -846,7 +884,37 @@ async function openChest(user, item, env) {
   const consumed = await consumeInventoryItem(user,item.item_key,1,env);
   if (!consumed.ok) throw httpError(409,"Tu ne possèdes pas ce coffre.");
   const rarity = item.rarity === "event" ? "event" : item.rarity;
-  const count = rarity === "legendary" ? 3 : (rarity === "epic" || rarity === "event") ? 2 : 1;
+
+  if (["common","rare","epic","legendary"].includes(rarity)) {
+    const limits = {
+      common:{points:[20,119],xp:[10,69]},
+      rare:{points:[100,399],xp:[50,199]},
+      epic:{points:[250,699],xp:[150,400]},
+      legendary:{points:[600,1499],xp:[300,700]}
+    }[rarity];
+    const points = randomBetween(limits.points[0],limits.points[1]);
+    const boost = await activeXpMultiplier(user,env);
+    const maxBaseXp = Math.max(1,Math.floor(limits.xp[1] / Math.max(1,boost.multiplier)));
+    const minBaseXp = Math.min(limits.xp[0],maxBaseXp);
+    const baseXp = randomBetween(minBaseXp,maxBaseXp);
+    await addPoints(user,points,env);
+    const xp = await addXp(user,baseXp,env);
+    await logAwardedXp(user,"chest_loot_xp",xp.awarded,env,{base_xp:baseXp,chest:item.item_key,rarity});
+    // 0 XP d'activité supplémentaire : le gain total du coffre reste dans le plafond annoncé.
+    const activity = await recordActivity(user,"chest_open",1,0,env,{chest:item.item_key,rarity,points,xp:xp.awarded});
+    return {
+      ok:true,
+      chest:{item_key:item.item_key,name:item.name,emoji:item.emoji,rarity},
+      rewards:[
+        {type:"points",points,label:`${points} points`},
+        {type:"xp",xp:xp.awarded,label:`${xp.awarded} XP`}
+      ],
+      activity_xp:0,
+      profile:activity.profile
+    };
+  }
+
+  const count = 2;
   const rewards = [];
   for (let i=0;i<count;i++) rewards.push(await applyChestReward(user,weightedReward(chestLootTable(rarity)),env));
   const xp = await recordActivity(user,"chest_open",1,Number(await setting(env,"xp_chest","25")),env,{chest:item.item_key,rarity});
@@ -973,6 +1041,111 @@ async function claimCommunityEvent(request, user, env, eventId) {
   return json({ok:true,reward:{points,xp:xp.awarded,item},profile:xp.profile},200,env,request);
 }
 
+async function progressionRewardItemKey(value, env) {
+  const key = String(value || "").trim();
+  if (!key) return null;
+  const exists = await env.DB.prepare("SELECT 1 FROM item_catalog WHERE item_key=?").bind(key).first();
+  if (!exists) throw httpError(400, "L’objet de récompense sélectionné n’existe pas.");
+  return key;
+}
+
+function progressionActivityType(value, fallback = "generation") {
+  const activity = String(value || fallback).trim().toLowerCase();
+  if (!/^[a-z0-9_]{2,40}$/.test(activity)) throw httpError(400, "Type d’activité invalide.");
+  return activity;
+}
+
+async function createMission(request, env) {
+  const body = await parseJson(request);
+  const title = String(body.title || "").trim().slice(0,100);
+  if (!title) throw httpError(400, "Titre requis.");
+  const scope = ["classic","weekly"].includes(body.scope) ? body.scope : "classic";
+  let id = String(body.id || slug(title)).trim().slice(0,64) || crypto.randomUUID();
+  let suffix = 2;
+  const baseId = id;
+  while (await env.DB.prepare("SELECT 1 FROM missions WHERE id=?").bind(id).first()) id = `${baseId.slice(0,56)}-${suffix++}`;
+  const rewardItemKey = await progressionRewardItemKey(body.reward_item_key, env);
+  const now = Date.now();
+  await env.DB.prepare(`INSERT INTO missions(id,scope,title,description,activity_type,target,reward_points,reward_xp,reward_item_key,active,sort_order,created_at,updated_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(
+      id,scope,title,String(body.description || "").slice(0,500),progressionActivityType(body.activity_type),
+      Math.max(1,Math.trunc(Number(body.target || 1))),Math.max(0,Math.trunc(Number(body.reward_points || 0))),
+      Math.max(0,Math.trunc(Number(body.reward_xp || 0))),rewardItemKey,body.active===false?0:1,
+      Math.trunc(Number(body.sort_order || 0)),now,now
+    ).run();
+  return json({ok:true,id},201,env,request);
+}
+
+async function updateMission(request, env, id) {
+  const current = await env.DB.prepare("SELECT * FROM missions WHERE id=?").bind(id).first();
+  if (!current) throw httpError(404, "Quête introuvable.");
+  const body = await parseJson(request);
+  const title = String(body.title ?? current.title).trim().slice(0,100);
+  if (!title) throw httpError(400, "Titre requis.");
+  const scope = ["classic","weekly"].includes(body.scope) ? body.scope : current.scope;
+  const rewardItemKey = await progressionRewardItemKey(body.reward_item_key ?? current.reward_item_key, env);
+  await env.DB.prepare(`UPDATE missions SET scope=?,title=?,description=?,activity_type=?,target=?,reward_points=?,reward_xp=?,reward_item_key=?,active=?,sort_order=?,updated_at=? WHERE id=?`).bind(
+    scope,title,String(body.description ?? current.description).slice(0,500),progressionActivityType(body.activity_type ?? current.activity_type),
+    Math.max(1,Math.trunc(Number(body.target ?? current.target))),Math.max(0,Math.trunc(Number(body.reward_points ?? current.reward_points))),
+    Math.max(0,Math.trunc(Number(body.reward_xp ?? current.reward_xp))),rewardItemKey,
+    body.active===undefined?current.active:(body.active?1:0),Math.trunc(Number(body.sort_order ?? current.sort_order)),Date.now(),id
+  ).run();
+  return json({ok:true,id},200,env,request);
+}
+
+async function resetMissionProgress(request, env, id) {
+  if (!await env.DB.prepare("SELECT 1 FROM missions WHERE id=?").bind(id).first()) throw httpError(404, "Quête introuvable.");
+  const result = await env.DB.prepare("DELETE FROM user_mission_progress WHERE mission_id=?").bind(id).run();
+  return json({ok:true,id,removed:Number(result.meta?.changes || 0)},200,env,request);
+}
+
+async function deleteMission(request, env, id) {
+  if (!await env.DB.prepare("SELECT 1 FROM missions WHERE id=?").bind(id).first()) throw httpError(404, "Quête introuvable.");
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM user_mission_progress WHERE mission_id=?").bind(id),
+    env.DB.prepare("DELETE FROM missions WHERE id=?").bind(id)
+  ]);
+  return json({ok:true,id},200,env,request);
+}
+
+async function updateCommunityEvent(request, env, id) {
+  const current = await env.DB.prepare("SELECT * FROM community_events WHERE id=?").bind(id).first();
+  if (!current) throw httpError(404, "Événement introuvable.");
+  const body = await parseJson(request);
+  const title = String(body.title ?? current.title).trim().slice(0,100);
+  if (!title) throw httpError(400, "Titre requis.");
+  const startsAt = Math.max(0,Number(body.starts_at ?? current.starts_at));
+  const endsAt = Math.max(startsAt + 3600000,Number(body.ends_at ?? current.ends_at));
+  const rewardItemKey = await progressionRewardItemKey(body.reward_item_key ?? current.reward_item_key, env);
+  await env.DB.prepare(`UPDATE community_events SET title=?,description=?,emoji=?,activity_type=?,target=?,reward_points=?,reward_xp=?,reward_item_key=?,starts_at=?,ends_at=?,active=?,updated_at=? WHERE id=?`).bind(
+    title,String(body.description ?? current.description).slice(0,500),String(body.emoji ?? current.emoji).slice(0,16),
+    progressionActivityType(body.activity_type ?? current.activity_type),Math.max(1,Math.trunc(Number(body.target ?? current.target))),
+    Math.max(0,Math.trunc(Number(body.reward_points ?? current.reward_points))),Math.max(0,Math.trunc(Number(body.reward_xp ?? current.reward_xp))),
+    rewardItemKey,startsAt,endsAt,body.active===undefined?current.active:(body.active?1:0),Date.now(),id
+  ).run();
+  return json({ok:true,id},200,env,request);
+}
+
+async function resetCommunityEventProgress(request, env, id) {
+  if (!await env.DB.prepare("SELECT 1 FROM community_events WHERE id=?").bind(id).first()) throw httpError(404, "Événement introuvable.");
+  const now = Date.now();
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO community_event_progress(event_id,progress,updated_at) VALUES(?,0,?) ON CONFLICT(event_id) DO UPDATE SET progress=0,updated_at=excluded.updated_at`).bind(id,now),
+    env.DB.prepare("DELETE FROM community_event_participants WHERE event_id=?").bind(id)
+  ]);
+  return json({ok:true,id},200,env,request);
+}
+
+async function deleteCommunityEvent(request, env, id) {
+  if (!await env.DB.prepare("SELECT 1 FROM community_events WHERE id=?").bind(id).first()) throw httpError(404, "Événement introuvable.");
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM community_event_participants WHERE event_id=?").bind(id),
+    env.DB.prepare("DELETE FROM community_event_progress WHERE event_id=?").bind(id),
+    env.DB.prepare("DELETE FROM community_events WHERE id=?").bind(id)
+  ]);
+  return json({ok:true,id},200,env,request);
+}
+
 async function createCommunityEvent(request, env) {
   const body = await parseJson(request);
   const title = String(body.title || "").trim().slice(0,100);
@@ -981,8 +1154,9 @@ async function createCommunityEvent(request, env) {
   const now = Date.now();
   const startsAt = Math.max(0,Number(body.starts_at || now));
   const endsAt = Math.max(startsAt+3600000,Number(body.ends_at || now+7*86400000));
+  const rewardItemKey = await progressionRewardItemKey(body.reward_item_key, env);
   await env.DB.prepare(`INSERT INTO community_events(id,title,description,emoji,activity_type,target,reward_points,reward_xp,reward_item_key,starts_at,ends_at,active,created_at,updated_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(id,title,String(body.description || "").slice(0,500),String(body.emoji || "🌍").slice(0,16),String(body.activity_type || "generation").slice(0,40),Math.max(1,Math.trunc(Number(body.target || 1))),Math.max(0,Math.trunc(Number(body.reward_points || 0))),Math.max(0,Math.trunc(Number(body.reward_xp || 0))),body.reward_item_key || null,startsAt,endsAt,body.active===false?0:1,now,now).run();
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).bind(id,title,String(body.description || "").slice(0,500),String(body.emoji || "🌍").slice(0,16),progressionActivityType(body.activity_type),Math.max(1,Math.trunc(Number(body.target || 1))),Math.max(0,Math.trunc(Number(body.reward_points || 0))),Math.max(0,Math.trunc(Number(body.reward_xp || 0))),rewardItemKey,startsAt,endsAt,body.active===false?0:1,now,now).run();
   await env.DB.prepare("INSERT OR IGNORE INTO community_event_progress(event_id,progress,updated_at) VALUES(?,0,?)").bind(id,now).run();
   return json({ok:true,id},201,env,request);
 }
@@ -1005,10 +1179,23 @@ async function handleAdmin(request, user, env, path) {
   if (path === "/api/admin/products" && request.method === "POST") return createProduct(request, env);
   if (path === "/api/admin/wheel" && request.method === "POST") return createWheelReward(request, env);
   if (path === "/api/admin/settings" && request.method === "PUT") return updateSettings(request, env);
+  if (path === "/api/admin/missions" && request.method === "POST") return createMission(request, env);
   if (path === "/api/admin/community-events" && request.method === "POST") return createCommunityEvent(request, env);
   if (path === "/api/admin/promo-codes" && request.method === "POST") return createPromoCode(request, env);
 
-  let match = path.match(/^\/api\/admin\/services\/([^/]+)$/);
+  let match = path.match(/^\/api\/admin\/missions\/([^/]+)$/);
+  if (match && request.method === "PUT") return updateMission(request, env, decodeURIComponent(match[1]));
+  if (match && request.method === "DELETE") return deleteMission(request, env, decodeURIComponent(match[1]));
+  match = path.match(/^\/api\/admin\/missions\/([^/]+)\/reset$/);
+  if (match && request.method === "POST") return resetMissionProgress(request, env, decodeURIComponent(match[1]));
+
+  match = path.match(/^\/api\/admin\/community-events\/([^/]+)$/);
+  if (match && request.method === "PUT") return updateCommunityEvent(request, env, decodeURIComponent(match[1]));
+  if (match && request.method === "DELETE") return deleteCommunityEvent(request, env, decodeURIComponent(match[1]));
+  match = path.match(/^\/api\/admin\/community-events\/([^/]+)\/reset$/);
+  if (match && request.method === "POST") return resetCommunityEventProgress(request, env, decodeURIComponent(match[1]));
+
+  match = path.match(/^\/api\/admin\/services\/([^/]+)$/);
   if (match && request.method === "PUT") return updateService(request, env, match[1]);
   if (match && request.method === "DELETE") return deleteService(request, env, match[1]);
   match = path.match(/^\/api\/admin\/services\/([^/]+)\/restock$/);
@@ -1085,8 +1272,14 @@ async function getAdminTimersData(env) {
 async function adminOverview(request, env) {
   // Requêtes séquentielles : plus stables avec D1 que plusieurs lectures concurrentes.
   const services = await env.DB.prepare(`SELECT s.*,COUNT(i.id) AS stock FROM services s LEFT JOIN inventory_lines i ON i.service_id=s.id GROUP BY s.id ORDER BY s.created_at`).all();
-  const products = await env.DB.prepare(`SELECT p.*,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id GROUP BY p.id ORDER BY p.created_at`).all();
+  const products = await env.DB.prepare(`SELECT p.*,COUNT(l.id) AS stock FROM products p LEFT JOIN product_lines l ON l.product_id=p.id WHERE p.id NOT LIKE 'points-chest-%' GROUP BY p.id ORDER BY p.created_at`).all();
   const wheel = await env.DB.prepare("SELECT * FROM wheel_rewards ORDER BY created_at").all();
+  const missions = await env.DB.prepare("SELECT * FROM missions ORDER BY scope,sort_order,title").all();
+  const communityEvents = await env.DB.prepare(`SELECT e.*,COALESCE(ep.progress,0) AS progress,
+    (SELECT COUNT(*) FROM community_event_participants p WHERE p.event_id=e.id) AS participants
+    FROM community_events e LEFT JOIN community_event_progress ep ON ep.event_id=e.id
+    ORDER BY e.created_at DESC,e.title`).all();
+  const itemCatalog = await env.DB.prepare("SELECT item_key,name,emoji,item_type,rarity FROM item_catalog ORDER BY item_type,rarity,name").all();
   const dayKey = brusselsDayKey();
   const users = await env.DB.prepare(`SELECT u.discord_id,u.username,u.global_name AS display_name,u.points,u.total_earned,u.total_spent,
     COALESCE(
@@ -1111,10 +1304,13 @@ async function adminOverview(request, env) {
   const timers = await getAdminTimersData(env);
   const settings = Object.fromEntries(settingsRows.results.map(x => [x.key,x.value]));
   return json({
-    api_version:"progression-v7",
+    api_version:"progression-v7.2",
     services:services.results.map(x=>({...x,stock:Number(x.stock),cooldown_seconds:Number(x.cooldown_seconds),enabled:!!x.enabled})),
     products:products.results.map(x=>({...x,stock:Number(x.stock),price:Number(x.price),enabled:!!x.enabled})),
     wheel_rewards:wheel.results.map(x=>({...x,points:Number(x.points),weight:Number(x.weight)})),
+    missions:missions.results.map(x=>({...x,target:Number(x.target),reward_points:Number(x.reward_points||0),reward_xp:Number(x.reward_xp||0),sort_order:Number(x.sort_order||0),active:!!x.active})),
+    community_events:communityEvents.results.map(x=>({...x,target:Number(x.target),reward_points:Number(x.reward_points||0),reward_xp:Number(x.reward_xp||0),starts_at:Number(x.starts_at),ends_at:Number(x.ends_at),progress:Number(x.progress||0),participants:Number(x.participants||0),active:!!x.active})),
+    item_catalog:itemCatalog.results || [],
     users:users.results.map(x=>({...x,
       points:Number(x.points),
       total_earned:Number(x.total_earned),
