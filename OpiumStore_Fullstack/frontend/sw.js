@@ -1,12 +1,12 @@
-const CACHE_NAME = "opiumstore-v76";
-const OFFLINE_URL = "./index.html?v=20260713-v76";
+const CACHE_NAME = "opiumstore-v77";
+const OFFLINE_URL = "./index.html?v=20260714-v77";
 const APP_SHELL = [
   OFFLINE_URL,
-  "./styles.css?v=20260713-v76",
-  "./progression.css?v=20260713-v76",
-  "./app.js?v=20260713-v76",
-  "./config.js?v=20260713-v76",
-  "./manifest.webmanifest?v=20260713-v76",
+  "./styles.css?v=20260714-v77",
+  "./progression.css?v=20260714-v77",
+  "./app.js?v=20260714-v77",
+  "./config.js?v=20260714-v77",
+  "./manifest.webmanifest?v=20260714-v77",
   "./assets/logo.png",
   "./assets/icon-192.png",
   "./assets/icon-512.png"
@@ -50,5 +50,33 @@ self.addEventListener("fetch", event => {
     } catch {
       return (await caches.match(request)) || (request.mode === "navigate" ? await caches.match(OFFLINE_URL) : Response.error());
     }
+  })());
+});
+
+self.addEventListener("push", event => {
+  event.waitUntil(self.registration.showNotification("OpiumStore", {
+    body:"Une récompense quotidienne ou un tour de roue est disponible.",
+    icon:"./assets/icon-192.png",
+    badge:"./assets/icon-192.png",
+    tag:"opiumstore-reward-ready",
+    renotify:false,
+    data:{url:"./"},
+    actions:[{action:"open",title:"Ouvrir OpiumStore"}]
+  }));
+});
+
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const target = new URL(event.notification.data?.url || "./", self.location.origin).href;
+    const windows = await self.clients.matchAll({type:"window",includeUncontrolled:true});
+    for (const client of windows) {
+      if (client.url.startsWith(self.location.origin)) {
+        await client.focus();
+        if ("navigate" in client) await client.navigate(target);
+        return;
+      }
+    }
+    await self.clients.openWindow(target);
   })());
 });

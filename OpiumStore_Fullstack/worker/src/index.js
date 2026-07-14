@@ -26,7 +26,7 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
-      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"progression-v7.6"}, 200, env, request);
+      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"progression-v7.7"}, 200, env, request);
       if (path === "/auth/discord/start" && request.method === "GET") return await startDiscordAuth(env);
       if (path === "/auth/discord/callback" && request.method === "GET") return await discordCallback(request, env);
       if (path === "/auth/exchange" && request.method === "POST") return await exchangeLoginCode(request, env);
@@ -48,8 +48,14 @@ export default {
       if (path === "/api/promo/redeem" && request.method === "POST") return await redeemPromoCode(request, user, env);
       if (path === "/api/leaderboards" && request.method === "GET") return await getLeaderboards(request, user, env);
       if (path === "/api/community-events" && request.method === "GET") return await getCommunityEvents(request, user, env);
+      if (path === "/api/inventory/gift" && request.method === "POST") return await giftInventoryItem(request, user, env);
+      if (path === "/api/push/config" && request.method === "GET") return await getPushConfig(request, user, env);
+      if (path === "/api/push/subscribe" && request.method === "POST") return await subscribePush(request, user, env);
+      if (path === "/api/push/unsubscribe" && request.method === "POST") return await unsubscribePush(request, user, env);
 
-      let publicMatch = path.match(/^\/api\/missions\/([^/]+)\/claim$/);
+      let publicMatch = path.match(/^\/api\/daily-challenges\/([^/]+)\/claim$/);
+      if (publicMatch && request.method === "POST") return await claimDailyChallenge(request, user, env, decodeURIComponent(publicMatch[1]));
+      publicMatch = path.match(/^\/api\/missions\/([^/]+)\/claim$/);
       if (publicMatch && request.method === "POST") return await claimMissionReward(request, user, env, decodeURIComponent(publicMatch[1]));
       publicMatch = path.match(/^\/api\/community-events\/([^/]+)\/claim$/);
       if (publicMatch && request.method === "POST") return await claimCommunityEvent(request, user, env, decodeURIComponent(publicMatch[1]));
@@ -69,6 +75,9 @@ export default {
         ...(error?.extra && typeof error.extra === "object" ? error.extra : {})
       }, status, env, request);
     }
+  },
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(runPushScheduler(env).catch(error => console.error("Push scheduler:", error)));
   }
 };
 
@@ -231,9 +240,34 @@ function publicUser(user, env) {
 async function startDiscordAuth(env) {
   for (const key of ["DISCORD_CLIENT_ID","DISCORD_CLIENT_SECRET","DISCORD_REDIRECT_URI","FRONTEND_ORIGIN"]) if (!env[key]) throw httpError(500, `${key} manquante.`);
   const state = randomToken(24);
-  const params = new URLSearchParams({response_type:"code",client_id:env.DISCORD_CLIENT_ID,scope:"identify",state,redirect_uri:env.DISCORD_REDIRECT_URI,prompt:"consent"});
+  const params = new URLSearchParams({response_type:"code",client_id:env.DISCORD_CLIENT_ID,scope:"identify guilds.members.read",state,redirect_uri:env.DISCORD_REDIRECT_URI,prompt:"consent"});
   const cookie = `opium_oauth_state=${encodeURIComponent(state)}; Max-Age=${OAUTH_STATE_TTL_SECONDS}; Path=/; HttpOnly; Secure; SameSite=Lax`;
   return redirect(`https://discord.com/oauth2/authorize?${params}`, cookie);
+}
+
+async function discordRankFromRoles(accessToken, env) {
+  const guildId = String(env.DISCORD_GUILD_ID || "").trim();
+  const boostRoleId = String(env.DISCORD_BOOST_ROLE_ID || "").trim();
+  const vipRoleId = String(env.DISCORD_VIP_ROLE_ID || "").trim();
+  if (!guildId || (!boostRoleId && !vipRoleId)) return null;
+  try {
+    const response = await fetch(`${DISCORD_API}/users/@me/guilds/${encodeURIComponent(guildId)}/member`, {
+      headers:{Authorization:`Bearer ${accessToken}`}
+    });
+    if (response.status === 404) return "free";
+    if (!response.ok) {
+      console.warn("Discord member sync failed:", response.status, await response.text().catch(() => ""));
+      return null;
+    }
+    const member = await response.json();
+    const roles = new Set(Array.isArray(member.roles) ? member.roles.map(String) : []);
+    if (vipRoleId && roles.has(vipRoleId)) return "vip";
+    if (boostRoleId && roles.has(boostRoleId)) return "boost";
+    return "free";
+  } catch (error) {
+    console.warn("Discord member sync error:", error);
+    return null;
+  }
 }
 
 async function discordCallback(request, env) {
@@ -262,7 +296,13 @@ async function discordCallback(request, env) {
     ON CONFLICT(discord_id) DO UPDATE SET username=excluded.username,global_name=excluded.global_name,avatar=excluded.avatar,updated_at=excluded.updated_at`)
     .bind(discord.id, discord.username, discord.global_name || null, discord.avatar || null, startingPoints, startingPoints, now, now).run();
   const user = await env.DB.prepare("SELECT * FROM users WHERE discord_id=?").bind(discord.id).first();
-  await env.DB.prepare("INSERT OR IGNORE INTO user_ranks(user_id,rank,updated_at) VALUES(?,'free',?)").bind(user.id,now).run();
+  const syncedRank = await discordRankFromRoles(token.access_token, env);
+  if (syncedRank) {
+    await env.DB.prepare(`INSERT INTO user_ranks(user_id,rank,updated_at) VALUES(?,?,?)
+      ON CONFLICT(user_id) DO UPDATE SET rank=excluded.rank,updated_at=excluded.updated_at`).bind(user.id,syncedRank,now).run();
+  } else {
+    await env.DB.prepare("INSERT OR IGNORE INTO user_ranks(user_id,rank,updated_at) VALUES(?,'free',?)").bind(user.id,now).run();
+  }
   const rawCode = randomToken(32);
   await env.DB.prepare("INSERT INTO login_codes(code_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)").bind(await sha256(rawCode), user.id, now + LOGIN_CODE_TTL_MS, now).run();
   return redirect(`${env.FRONTEND_ORIGIN}/#auth_code=${encodeURIComponent(rawCode)}`, clearCookie);
@@ -306,6 +346,37 @@ async function setting(env, key, fallback) {
   return row?.value ?? fallback;
 }
 
+function stableHash(value) {
+  let hash = 2166136261;
+  for (const ch of String(value || "")) {
+    hash ^= ch.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function dailyDealMap(products, dayKey, count = 3) {
+  const sorted = [...products].sort((a,b) => stableHash(`${dayKey}:${a.id}`) - stableHash(`${dayKey}:${b.id}`));
+  const selected = new Set(sorted.slice(0,Math.min(Math.max(0,count),sorted.length)).map(x => x.id));
+  const discounts = [10,15,20,25,30,35];
+  const map = new Map();
+  for (const product of products) {
+    const basePrice = Math.max(0,Math.trunc(Number(product.price || 0)));
+    const dailyDeal = selected.has(product.id) && basePrice > 0;
+    const discountPercent = dailyDeal ? discounts[stableHash(`${dayKey}:discount:${product.id}`) % discounts.length] : 0;
+    const price = dailyDeal ? Math.max(1,Math.floor(basePrice*(100-discountPercent)/100)) : basePrice;
+    map.set(product.id,{base_price:basePrice,price,daily_deal:dailyDeal,discount_percent:discountPercent});
+  }
+  return map;
+}
+
+async function currentShopPricing(env) {
+  const rows = await env.DB.prepare("SELECT id,price FROM products WHERE enabled=1 AND id NOT LIKE 'points-%'").all();
+  const all = [...POINT_SHOP_CHESTS.map(x => ({id:x.id,price:x.price})),...(rows.results || [])];
+  const count = Math.max(0,Math.trunc(Number(await setting(env,"daily_deals_count","3"))));
+  return dailyDealMap(all,brusselsDayKey(),count);
+}
+
 async function getCatalog(user, env, request) {
   const now = Date.now();
   const currentRank = effectiveRank(user,env);
@@ -326,16 +397,21 @@ async function getCatalog(user, env, request) {
   const dailyGenerationLimit = await getUserDailyGenerationLimit(user, env);
   const generationsToday = await getDailyGenerationUsage(user, env, dayKey);
   const dailyGenerationRemaining = dailyGenerationLimit === 0 ? -1 : Math.max(0,dailyGenerationLimit-generationsToday);
+  const settingsDailyDeals = await setting(env,"daily_deals_count","3");
   return json({
     rank:publicRank(user,env),
     services:services.results.map(s => {
       const requiredRank=normalizeAccessRank(s.required_rank);
       return {...s,required_rank:requiredRank,access_granted:rankAllows(currentRank,requiredRank),stock:Number(s.stock),cooldown_remaining:Math.ceil(Number(s.cooldown_ms)/1000)};
     }),
-    products:[
-      ...POINT_SHOP_CHESTS.map(p => ({...p,stock:-1,infinite_stock:true,enabled:1})),
-      ...products.results.map(p => ({...p,stock:Number(p.stock),price:Number(p.price),infinite_stock:false}))
-    ],
+    products:(() => {
+      const all=[
+        ...POINT_SHOP_CHESTS.map(p => ({...p,stock:-1,infinite_stock:true,enabled:1})),
+        ...products.results.map(p => ({...p,stock:Number(p.stock),price:Number(p.price),infinite_stock:false}))
+      ];
+      const deals=dailyDealMap(all,dayKey,Math.max(0,Number(settingsDailyDeals || 3)));
+      return all.map(p => ({...p,...deals.get(p.id)}));
+    })(),
     wheel_rewards:wheelRewards.results.map(r => ({...r,points:Number(r.points),weight:Number(r.weight)})),
     wheel_cooldown_remaining:wheel.cooldown_remaining,
     wheel_cycle_reset_at:wheel.reset_at,
@@ -476,16 +552,19 @@ async function purchaseProduct(request, user, env) {
   const virtualChest = POINT_SHOP_CHESTS.find(item => item.id === product_id);
 
   if (virtualChest) {
-    const price = Number(virtualChest.price), now = Date.now();
+    const pricing = await currentShopPricing(env);
+    const price = Number(pricing.get(virtualChest.id)?.price ?? virtualChest.price), now = Date.now();
     const deducted = await env.DB.prepare("UPDATE users SET points=points-?,total_spent=total_spent+?,updated_at=? WHERE id=? AND points>=? RETURNING points")
       .bind(price,price,now,user.id,price).first();
     if (!deducted) throw httpError(409, "Points insuffisants.");
 
+    let inventoryGranted=false;
     try {
       // Ligne produit technique nécessaire pour respecter la clé étrangère de purchases.
       await env.DB.prepare(`INSERT OR IGNORE INTO products(id,name,emoji,description,price,enabled,created_at,updated_at)
         VALUES(?,?,?,?,?,0,?,?)`).bind(virtualChest.id,virtualChest.name,virtualChest.emoji,virtualChest.description,price,now,now).run();
       await grantInventoryItem(user,virtualChest.item_key,1,env);
+      inventoryGranted=true;
       const id = crypto.randomUUID();
       const message = `${virtualChest.name} ajouté à ton inventaire (stock illimité).`;
       const encrypted = await encryptText(message,env);
@@ -494,6 +573,10 @@ async function purchaseProduct(request, user, env) {
       const progression = await recordActivity(user,"purchase",1,Number(await setting(env,"xp_purchase","35")),env,{product_id:virtualChest.id,product_name:virtualChest.name,price,item_key:virtualChest.item_key,infinite_stock:true});
       return json({purchase:{id,kind:"inventory",item_key:virtualChest.item_key,title:virtualChest.name,value:message,price,created_at:now},points:Number(deducted.points),progression},200,env,request);
     } catch (error) {
+      if (inventoryGranted) {
+        await env.DB.prepare("UPDATE user_inventory SET quantity=MAX(0,quantity-1),updated_at=? WHERE user_id=? AND item_key=?").bind(Date.now(),user.id,virtualChest.item_key).run().catch(()=>{});
+        await env.DB.prepare("DELETE FROM user_inventory WHERE user_id=? AND item_key=? AND quantity<=0").bind(user.id,virtualChest.item_key).run().catch(()=>{});
+      }
       await env.DB.prepare("UPDATE users SET points=points+?,total_spent=MAX(0,total_spent-?),updated_at=? WHERE id=?")
         .bind(price,price,Date.now(),user.id).run();
       throw error;
@@ -502,7 +585,8 @@ async function purchaseProduct(request, user, env) {
 
   const product = await env.DB.prepare("SELECT * FROM products WHERE id=? AND enabled=1").bind(product_id).first();
   if (!product) throw httpError(404, "Récompense indisponible.");
-  const price = Number(product.price), now = Date.now();
+  const pricing = await currentShopPricing(env);
+  const price = Number(pricing.get(product.id)?.price ?? product.price), now = Date.now();
   const deducted = await env.DB.prepare("UPDATE users SET points=points-?,total_spent=total_spent+?,updated_at=? WHERE id=? AND points>=? RETURNING points").bind(price,price,now,user.id,price).first();
   if (!deducted) throw httpError(409, "Points insuffisants.");
   const line = await env.DB.prepare(`DELETE FROM product_lines WHERE id=(SELECT id FROM product_lines WHERE product_id=? ORDER BY id LIMIT 1) RETURNING id,cipher_text,iv`).bind(product.id).first();
@@ -770,7 +854,9 @@ async function recordActivity(user, activityType, amount, baseXp, env, metadata 
     VALUES(?,?,?,?,?,?,?,?,?,?)`).bind(crypto.randomUUID(),user.id,activityType,Math.max(0,Math.trunc(Number(amount || 0))),xp.awarded,keys.dayKey,keys.weekKey,keys.monthKey,JSON.stringify(metadata || {}).slice(0,2000),now).run();
   await updateMissionProgress(user,activityType,amount,env);
   await updateCommunityProgress(user,activityType,amount,env);
-  return xp;
+  await updateDailyChallengeProgress(user,activityType,amount,env);
+  const achievements = await evaluateSecretAchievements(user,activityType,env);
+  return {...xp,achievements};
 }
 
 async function logAwardedXp(user, activityType, awardedXp, env, metadata = {}) {
@@ -812,7 +898,10 @@ async function progressionInventoryRows(user, env) {
     WHERE ui.user_id=? AND ui.quantity>0 AND ic.active=1
     ORDER BY CASE ic.rarity WHEN 'legendary' THEN 1 WHEN 'epic' THEN 2 WHEN 'event' THEN 3 WHEN 'rare' THEN 4 ELSE 5 END,ic.item_type,ic.name`)
     .bind(user.id).all();
-  return (rows.results || []).map(row => ({...row,quantity:Number(row.quantity),equipped:!!row.equipped,stackable:!!row.stackable}));
+  return (rows.results || []).map(row => ({
+    ...row,quantity:Number(row.quantity),equipped:!!row.equipped,stackable:!!row.stackable,
+    giftable:["chest","ticket","boost","protector","token"].includes(String(row.item_type || ""))
+  }));
 }
 
 async function dailyRewardPreview(user, profile, env) {
@@ -834,11 +923,13 @@ async function getProgression(request, user, env) {
   const cosmetic = profile.active_cosmetic_key ? await inventoryItem(profile.active_cosmetic_key,env) : null;
   const today = brusselsDayKey();
   const preview = await dailyRewardPreview(user,profile,env);
+  const dailyChallenges = await dailyChallengeRows(user,env);
+  const secretAchievements = await secretAchievementRows(user,env);
   return json({
     rank:publicRank(user,env),
     profile:{...profileView(profile),missions_completed:Number(missionCount?.n || 0),points:Number(userRow?.points || 0),active_title:title?{key:title.item_key,name:title.name,emoji:title.emoji}:null,active_cosmetic:cosmetic?{key:cosmetic.item_key,name:cosmetic.name,emoji:cosmetic.emoji}:null},
     daily:{day_key:today,can_claim:profile.last_daily_key!==today,next_points:preview.points,next_xp:preview.xp,multiplier:preview.multiplier},
-    missions,inventory,effects:(effects.results || []).map(x=>({...x,multiplier:Number(x.multiplier),expires_at:Number(x.expires_at)}))
+    missions,daily_challenges:dailyChallenges,secret_achievements:secretAchievements,inventory,effects:(effects.results || []).map(x=>({...x,multiplier:Number(x.multiplier),expires_at:Number(x.expires_at)}))
   },200,env,request);
 }
 
@@ -1265,6 +1356,228 @@ async function createPromoCode(request, env) {
     VALUES(?,?,?,?,?,?,0,?,?,?,?,?)`).bind(code,String(body.description || "").slice(0,300),Math.max(0,Math.trunc(Number(body.reward_points || 0))),Math.max(0,Math.trunc(Number(body.reward_xp || 0))),body.reward_item_key || null,Math.max(0,Math.trunc(Number(body.max_uses || 0))),Math.max(0,Number(body.starts_at || 0)),Math.max(0,Number(body.ends_at || 0)),body.active===false?0:1,now,now).run();
   return json({ok:true,code},201,env,request);
 }
+
+// ===== Nouveautés V7.7 ======================================================
+async function ensureDailyChallenges(user, env) {
+  const dayKey=brusselsDayKey();
+  const existing=await env.DB.prepare(`SELECT c.*,t.title,t.description,t.emoji,t.activity_type
+    FROM user_daily_challenges c JOIN daily_challenge_templates t ON t.id=c.template_id
+    WHERE c.user_id=? AND c.day_key=? ORDER BY c.slot`).bind(user.id,dayKey).all();
+  if ((existing.results || []).length >= 3) return existing.results;
+  const templates=await env.DB.prepare("SELECT * FROM daily_challenge_templates WHERE active=1 ORDER BY id").all();
+  const selected=[...(templates.results || [])]
+    .sort((a,b)=>stableHash(`${dayKey}:${user.discord_id}:${a.id}`)-stableHash(`${dayKey}:${user.discord_id}:${b.id}`))
+    .slice(0,3);
+  const now=Date.now();
+  for (let index=0;index<selected.length;index++) {
+    const template=selected[index];
+    const min=Math.max(1,Number(template.min_target || 1));
+    const max=Math.max(min,Number(template.max_target || min));
+    const target=min+(stableHash(`${dayKey}:${user.discord_id}:${template.id}:target`)%(max-min+1));
+    await env.DB.prepare(`INSERT OR IGNORE INTO user_daily_challenges(user_id,day_key,slot,template_id,target,progress,claimed,reward_points,reward_xp,reward_item_key,updated_at)
+      VALUES(?,?,?,?,?,0,0,?,?,?,?)`).bind(user.id,dayKey,index+1,template.id,target,Number(template.reward_points||0),Number(template.reward_xp||0),template.reward_item_key||null,now).run();
+  }
+  const rows=await env.DB.prepare(`SELECT c.*,t.title,t.description,t.emoji,t.activity_type
+    FROM user_daily_challenges c JOIN daily_challenge_templates t ON t.id=c.template_id
+    WHERE c.user_id=? AND c.day_key=? ORDER BY c.slot`).bind(user.id,dayKey).all();
+  return rows.results || [];
+}
+
+async function dailyChallengeRows(user, env) {
+  const rows=await ensureDailyChallenges(user,env);
+  return rows.map(row=>{
+    const progress=Math.max(0,Number(row.progress||0));
+    const target=Math.max(1,Number(row.target||1));
+    return {slot:Number(row.slot),day_key:row.day_key,title:row.title,description:row.description,emoji:row.emoji,activity_type:row.activity_type,target,progress,percent:Math.min(100,Math.round(progress/target*100)),completed:progress>=target,claimed:!!row.claimed,reward_points:Number(row.reward_points||0),reward_xp:Number(row.reward_xp||0),reward_item_key:row.reward_item_key||null};
+  });
+}
+
+async function updateDailyChallengeProgress(user, activityType, amount, env) {
+  const dayKey=brusselsDayKey();
+  await ensureDailyChallenges(user,env);
+  const increment=Math.max(0,Math.trunc(Number(amount||0)));
+  if (!increment) return;
+  const now=Date.now();
+  const rows=await env.DB.prepare(`SELECT c.slot,c.target,c.progress FROM user_daily_challenges c
+    JOIN daily_challenge_templates t ON t.id=c.template_id
+    WHERE c.user_id=? AND c.day_key=? AND c.claimed=0 AND (t.activity_type=? OR t.activity_type='any')`).bind(user.id,dayKey,activityType).all();
+  for (const row of rows.results || []) {
+    const next=Number(row.progress||0)+increment;
+    await env.DB.prepare(`UPDATE user_daily_challenges SET progress=?,completed_at=CASE WHEN ?>=target THEN COALESCE(completed_at,?) ELSE completed_at END,updated_at=?
+      WHERE user_id=? AND day_key=? AND slot=?`).bind(next,next,now,now,user.id,dayKey,row.slot).run();
+  }
+}
+
+async function claimDailyChallenge(request,user,env,slotRaw) {
+  const slot=Math.trunc(Number(slotRaw));
+  if (![1,2,3].includes(slot)) throw httpError(400,"Défi quotidien invalide.");
+  await ensureDailyChallenges(user,env);
+  const dayKey=brusselsDayKey();
+  const challenge=await env.DB.prepare(`SELECT c.*,t.title,t.emoji FROM user_daily_challenges c JOIN daily_challenge_templates t ON t.id=c.template_id
+    WHERE c.user_id=? AND c.day_key=? AND c.slot=?`).bind(user.id,dayKey,slot).first();
+  if (!challenge) throw httpError(404,"Défi quotidien introuvable.");
+  if (Number(challenge.progress)<Number(challenge.target)) throw httpError(409,"Ce défi n’est pas encore terminé.");
+  const claimed=await env.DB.prepare(`UPDATE user_daily_challenges SET claimed=1,claimed_at=?,updated_at=?
+    WHERE user_id=? AND day_key=? AND slot=? AND claimed=0 RETURNING claimed`).bind(Date.now(),Date.now(),user.id,dayKey,slot).first();
+  if (!claimed) throw httpError(409,"La récompense de ce défi a déjà été récupérée.");
+  const points=Math.max(0,Number(challenge.reward_points||0));
+  const xpAmount=Math.max(0,Number(challenge.reward_xp||0));
+  if (points) await addPoints(user,points,env);
+  const xp=await addXp(user,xpAmount,env);
+  await logAwardedXp(user,"daily_challenge_claim",xp.awarded,env,{slot,title:challenge.title});
+  const item=challenge.reward_item_key?await grantInventoryItem(user,challenge.reward_item_key,1,env):null;
+  return json({ok:true,reward:{points,xp:xp.awarded,item},profile:xp.profile},200,env,request);
+}
+
+async function evaluateSecretAchievements(user, activityType, env) {
+  const candidates=await env.DB.prepare(`SELECT a.* FROM secret_achievements a
+    WHERE a.active=1 AND a.activity_type=? AND NOT EXISTS(SELECT 1 FROM user_achievements ua WHERE ua.user_id=? AND ua.achievement_id=a.id)`).bind(activityType,user.id).all();
+  const unlocked=[];
+  for (const achievement of candidates.results || []) {
+    const total=await env.DB.prepare("SELECT COALESCE(SUM(amount),0) AS n FROM activity_log WHERE user_id=? AND activity_type=?").bind(user.id,activityType).first();
+    if (Number(total?.n||0)<Number(achievement.threshold||1)) continue;
+    const inserted=await env.DB.prepare("INSERT OR IGNORE INTO user_achievements(user_id,achievement_id,unlocked_at) VALUES(?,?,?)").bind(user.id,achievement.id,Date.now()).run();
+    if (!Number(inserted.meta?.changes||0)) continue;
+    const points=Math.max(0,Number(achievement.reward_points||0));
+    const xpAmount=Math.max(0,Number(achievement.reward_xp||0));
+    if (points) await addPoints(user,points,env);
+    const xp=await addXp(user,xpAmount,env);
+    await logAwardedXp(user,"achievement_unlock",xp.awarded,env,{achievement_id:achievement.id});
+    const item=achievement.reward_item_key?await grantInventoryItem(user,achievement.reward_item_key,1,env):null;
+    unlocked.push({id:achievement.id,title:achievement.title,description:achievement.description,emoji:achievement.emoji,reward:{points,xp:xp.awarded,item}});
+  }
+  return unlocked;
+}
+
+async function secretAchievementRows(user,env) {
+  const rows=await env.DB.prepare(`SELECT a.*,ua.unlocked_at FROM secret_achievements a
+    LEFT JOIN user_achievements ua ON ua.achievement_id=a.id AND ua.user_id=?
+    WHERE a.active=1 ORDER BY CASE WHEN ua.unlocked_at IS NULL THEN 1 ELSE 0 END,ua.unlocked_at DESC,a.id`).bind(user.id).all();
+  return (rows.results||[]).map(row=>({
+    id:row.id,unlocked:!!row.unlocked_at,unlocked_at:row.unlocked_at?Number(row.unlocked_at):null,
+    title:row.unlocked_at?row.title:"Succès secret",description:row.unlocked_at?row.description:"Réalise une action spéciale pour révéler ce succès.",
+    emoji:row.unlocked_at?row.emoji:"🕵️",reward_points:row.unlocked_at?Number(row.reward_points||0):0,reward_xp:row.unlocked_at?Number(row.reward_xp||0):0,reward_item_key:row.unlocked_at?row.reward_item_key:null
+  }));
+}
+
+async function giftInventoryItem(request,user,env) {
+  const body=await parseJson(request);
+  const itemKey=String(body.item_key||"").trim();
+  const receiverDiscordId=String(body.receiver_discord_id||"").trim();
+  const quantity=Math.max(1,Math.min(100,Math.trunc(Number(body.quantity||1))));
+  if (!itemKey) throw httpError(400,"Objet manquant.");
+  if (!/^\d{5,30}$/.test(receiverDiscordId)) throw httpError(400,"ID Discord du destinataire invalide.");
+  if (receiverDiscordId===String(user.discord_id)) throw httpError(409,"Tu ne peux pas t’envoyer un cadeau à toi-même.");
+  const receiver=await env.DB.prepare("SELECT * FROM users WHERE discord_id=?").bind(receiverDiscordId).first();
+  if (!receiver) throw httpError(404,"Ce membre doit s’être connecté au site au moins une fois.");
+  const item=await inventoryItem(itemKey,env);
+  if (!item || !["chest","ticket","boost","protector","token"].includes(String(item.item_type||""))) throw httpError(409,"Cet objet ne peut pas être offert.");
+  const now=Date.now();
+  const removed=await env.DB.prepare(`UPDATE user_inventory SET quantity=quantity-?,updated_at=? WHERE user_id=? AND item_key=? AND quantity>=? RETURNING quantity`).bind(quantity,now,user.id,itemKey,quantity).first();
+  if (!removed) throw httpError(409,"Quantité insuffisante dans ton inventaire.");
+  const giftId=crypto.randomUUID();
+  try {
+    await env.DB.prepare(`INSERT INTO user_inventory(user_id,item_key,quantity,equipped,acquired_at,updated_at) VALUES(?,?,?,0,?,?)
+      ON CONFLICT(user_id,item_key) DO UPDATE SET quantity=user_inventory.quantity+excluded.quantity,updated_at=excluded.updated_at`).bind(receiver.id,itemKey,quantity,now,now).run();
+    await env.DB.prepare("INSERT INTO gift_transactions(id,sender_user_id,receiver_user_id,item_key,quantity,created_at) VALUES(?,?,?,?,?,?)").bind(giftId,user.id,receiver.id,itemKey,quantity,now).run();
+    await env.DB.prepare("DELETE FROM user_inventory WHERE user_id=? AND item_key=? AND quantity<=0").bind(user.id,itemKey).run();
+  } catch(error) {
+    await env.DB.prepare("DELETE FROM gift_transactions WHERE id=?").bind(giftId).run().catch(()=>{});
+    await env.DB.prepare("UPDATE user_inventory SET quantity=MAX(0,quantity-?),updated_at=? WHERE user_id=? AND item_key=?").bind(quantity,Date.now(),receiver.id,itemKey).run().catch(()=>{});
+    await env.DB.prepare("DELETE FROM user_inventory WHERE user_id=? AND item_key=? AND quantity<=0").bind(receiver.id,itemKey).run().catch(()=>{});
+    await env.DB.prepare(`INSERT INTO user_inventory(user_id,item_key,quantity,equipped,acquired_at,updated_at) VALUES(?,?,?,0,?,?)
+      ON CONFLICT(user_id,item_key) DO UPDATE SET quantity=user_inventory.quantity+excluded.quantity,updated_at=excluded.updated_at`).bind(user.id,itemKey,quantity,now,now).run();
+    throw error;
+  }
+  return json({ok:true,message:`${quantity} × ${item.name} offert à ${receiver.global_name||receiver.username}.`,gift:{item_key:itemKey,item_name:item.name,item_emoji:item.emoji,quantity,receiver_discord_id:receiverDiscordId,receiver_name:receiver.global_name||receiver.username}},200,env,request);
+}
+
+function vapidJwtPart(value) {
+  return base64Url(new TextEncoder().encode(JSON.stringify(value)));
+}
+
+async function vapidAuthorization(endpoint,env) {
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_JWK) throw new Error("Clés VAPID manquantes.");
+  const jwk=JSON.parse(String(env.VAPID_PRIVATE_JWK));
+  const audience=new URL(endpoint).origin;
+  const header=vapidJwtPart({typ:"JWT",alg:"ES256"});
+  const payload=vapidJwtPart({aud:audience,exp:Math.floor(Date.now()/1000)+12*3600,sub:String(env.VAPID_SUBJECT||"mailto:admin@example.com")});
+  const unsigned=`${header}.${payload}`;
+  const key=await crypto.subtle.importKey("jwk",jwk,{name:"ECDSA",namedCurve:"P-256"},false,["sign"]);
+  const signature=await crypto.subtle.sign({name:"ECDSA",hash:"SHA-256"},key,new TextEncoder().encode(unsigned));
+  return `vapid t=${unsigned}.${base64Url(signature)}, k=${String(env.VAPID_PUBLIC_KEY)}`;
+}
+
+async function sendEmptyPush(endpoint,env) {
+  const authorization=await vapidAuthorization(endpoint,env);
+  return fetch(endpoint,{method:"POST",headers:{TTL:"120",Urgency:"normal",Authorization:authorization,"Crypto-Key":`p256ecdsa=${String(env.VAPID_PUBLIC_KEY)}`}});
+}
+
+async function getPushConfig(request,user,env) {
+  const row=await env.DB.prepare("SELECT enabled,notify_daily,notify_wheel FROM push_subscriptions WHERE user_id=? AND enabled=1 ORDER BY updated_at DESC LIMIT 1").bind(user.id).first();
+  return json({configured:!!(env.VAPID_PUBLIC_KEY&&env.VAPID_PRIVATE_JWK),public_key:String(env.VAPID_PUBLIC_KEY||""),subscribed:!!row,notify_daily:row?!!row.notify_daily:true,notify_wheel:row?!!row.notify_wheel:true},200,env,request);
+}
+
+async function subscribePush(request,user,env) {
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_JWK) throw httpError(503,"Les notifications push ne sont pas encore configurées par l’administrateur.");
+  const body=await parseJson(request);
+  const subscription=body.subscription||body;
+  const endpoint=String(subscription.endpoint||"").trim();
+  const p256dh=String(subscription.keys?.p256dh||"").trim();
+  const auth=String(subscription.keys?.auth||"").trim();
+  if (!endpoint.startsWith("https://") || !p256dh || !auth) throw httpError(400,"Abonnement push invalide.");
+  const now=Date.now();
+  await env.DB.prepare(`INSERT INTO push_subscriptions(id,user_id,endpoint,p256dh,auth,enabled,notify_daily,notify_wheel,created_at,updated_at)
+    VALUES(?,?,?,?,?,1,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id,p256dh=excluded.p256dh,auth=excluded.auth,enabled=1,notify_daily=excluded.notify_daily,notify_wheel=excluded.notify_wheel,updated_at=excluded.updated_at`).bind(crypto.randomUUID(),user.id,endpoint,p256dh,auth,body.notify_daily===false?0:1,body.notify_wheel===false?0:1,now,now).run();
+  return json({ok:true,subscribed:true},200,env,request);
+}
+
+async function unsubscribePush(request,user,env) {
+  const body=await parseJson(request).catch(()=>({}));
+  const endpoint=String(body.endpoint||"").trim();
+  if (endpoint) await env.DB.prepare("DELETE FROM push_subscriptions WHERE user_id=? AND endpoint=?").bind(user.id,endpoint).run();
+  else await env.DB.prepare("DELETE FROM push_subscriptions WHERE user_id=?").bind(user.id).run();
+  return json({ok:true,subscribed:false},200,env,request);
+}
+
+async function runPushScheduler(env) {
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_JWK) return;
+  const subscriptions=await env.DB.prepare(`SELECT ps.*,u.discord_id,u.username,u.global_name,u.avatar,u.points,u.total_earned,u.total_spent,COALESCE(ur.rank,'free') AS account_rank
+    FROM push_subscriptions ps JOIN users u ON u.id=ps.user_id LEFT JOIN user_ranks ur ON ur.user_id=u.id
+    WHERE ps.enabled=1 ORDER BY ps.updated_at LIMIT 200`).all();
+  const now=Date.now();
+  const today=brusselsDayKey(now);
+  const wheelCycle=String(Math.floor(now/(12*60*60*1000)));
+  for (const row of subscriptions.results||[]) {
+    let shouldNotify=false;
+    let dailyNotice=false;
+    let wheelNotice=false;
+    if (Number(row.notify_daily)!==0 && row.last_daily_notice_key!==today) {
+      const profile=await env.DB.prepare("SELECT last_daily_key FROM progress_profiles WHERE user_id=?").bind(row.user_id).first();
+      if (profile?.last_daily_key!==today) {shouldNotify=true;dailyNotice=true;}
+    }
+    if (Number(row.notify_wheel)!==0 && row.last_wheel_notice_cycle!==wheelCycle) {
+      const user={...row,id:row.user_id,account_rank:normalizeRank(row.account_rank)};
+      const wheel=await getWheelState(user,env,now);
+      if (wheel.remaining>0) {shouldNotify=true;wheelNotice=true;}
+    }
+    if (!shouldNotify) {
+      await env.DB.prepare("UPDATE push_subscriptions SET updated_at=? WHERE id=?").bind(now,row.id).run();
+      continue;
+    }
+    try {
+      const response=await sendEmptyPush(row.endpoint,env);
+      if (response.status===404 || response.status===410) {
+        await env.DB.prepare("DELETE FROM push_subscriptions WHERE id=?").bind(row.id).run();
+        continue;
+      }
+      if (!response.ok) {console.warn("Push failed",response.status);continue;}
+      await env.DB.prepare(`UPDATE push_subscriptions SET last_daily_notice_key=CASE WHEN ? THEN ? ELSE last_daily_notice_key END,last_wheel_notice_cycle=CASE WHEN ? THEN ? ELSE last_wheel_notice_cycle END,updated_at=? WHERE id=?`).bind(dailyNotice?1:0,today,wheelNotice?1:0,wheelCycle,now,row.id).run();
+    } catch(error) {console.warn("Push send error:",error);}
+  }
+}
+// ===== Fin nouveautés V7.7 ==================================================
+
 // ===== Fin progression V7 ====================================================
 
 async function handleAdmin(request, user, env, path) {
@@ -1388,7 +1701,14 @@ async function adminOverview(request, env) {
   const timers = await getAdminTimersData(env);
   const settings = Object.fromEntries(settingsRows.results.map(x => [x.key,x.value]));
   return json({
-    api_version:"progression-v7.6",
+    api_version:"progression-v7.7",
+    discord_integration:{
+      guild_configured:!!String(env.DISCORD_GUILD_ID || "").trim(),
+      boost_role_configured:!!String(env.DISCORD_BOOST_ROLE_ID || "").trim(),
+      vip_role_configured:!!String(env.DISCORD_VIP_ROLE_ID || "").trim(),
+      restock_webhook_configured:!!String(env.DISCORD_RESTOCK_WEBHOOK_URL || "").trim(),
+      client_role_configured:!!String(env.DISCORD_CLIENT_ROLE_ID || "").trim()
+    },
     rank_rules:RANK_RULES,
     services:services.results.map(x=>({...x,required_rank:normalizeAccessRank(x.required_rank),stock:Number(x.stock),cooldown_seconds:Number(x.cooldown_seconds),enabled:!!x.enabled})),
     products:products.results.map(x=>({...x,stock:Number(x.stock),price:Number(x.price),enabled:!!x.enabled})),
@@ -1458,15 +1778,40 @@ async function deleteProduct(request,env,id){
   return json({ok:true},200,env,request)
 }
 
+async function announceDiscordRestock(element, count, env) {
+  const webhookUrl=String(env.DISCORD_RESTOCK_WEBHOOK_URL || "").trim();
+  const clientRoleId=String(env.DISCORD_CLIENT_ROLE_ID || "").trim();
+  if (!webhookUrl) return {sent:false,reason:"webhook_missing"};
+  const mention=clientRoleId ? `<@&${clientRoleId}> ` : "";
+  const content=`${mention}📦 **Réassort de ${count} ligne${count>1?"s":""} pour ${element.name}**`;
+  try {
+    const response=await fetch(webhookUrl,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+      username:"OpiumStore Restock",
+      content,
+      allowed_mentions:clientRoleId?{parse:[],roles:[clientRoleId]}:{parse:[]}
+    })});
+    if (!response.ok) {
+      console.warn("Discord restock webhook:",response.status,await response.text().catch(()=>""));
+      return {sent:false,reason:`http_${response.status}`};
+    }
+    return {sent:true};
+  } catch(error) {
+    console.warn("Discord restock webhook error:",error);
+    return {sent:false,reason:"network"};
+  }
+}
+
 async function restock(request, env, kind, id) {
   const body=await parseJson(request), lines=Array.isArray(body.lines)?body.lines.map(x=>String(x).trim()).filter(Boolean):[];
   if(!lines.length)throw httpError(400,"Ajoute au moins une ligne."); if(lines.length>1000)throw httpError(400,"Maximum 1000 lignes par envoi.");
   const table=kind==="service"?"services":"products", linesTable=kind==="service"?"inventory_lines":"product_lines", foreign=kind==="service"?"service_id":"product_id";
-  if(!await env.DB.prepare(`SELECT 1 FROM ${table} WHERE id=?`).bind(id).first())throw httpError(404,"Élément introuvable.");
+  const element=await env.DB.prepare(`SELECT id,name FROM ${table} WHERE id=?`).bind(id).first();
+  if(!element)throw httpError(404,"Élément introuvable.");
   const now=Date.now(), statements=[];
   for(const line of lines){if(line.length>4000)throw httpError(400,"Une ligne dépasse 4000 caractères.");const enc=await encryptText(line,env);statements.push(env.DB.prepare(`INSERT INTO ${linesTable}(${foreign},cipher_text,iv,created_at) VALUES(?,?,?,?)`).bind(id,enc.cipher_text,enc.iv,now));}
   for(let i=0;i<statements.length;i+=50)await env.DB.batch(statements.slice(i,i+50));
-  return json({ok:true,added:lines.length},200,env,request);
+  const discord=kind==="service" ? await announceDiscordRestock(element,lines.length,env) : {sent:false,reason:"product"};
+  return json({ok:true,added:lines.length,discord_announcement:discord},200,env,request);
 }
 
 async function clearStock(request,env,kind,id){const table=kind==="service"?"inventory_lines":"product_lines",foreign=kind==="service"?"service_id":"product_id";const result=await env.DB.prepare(`DELETE FROM ${table} WHERE ${foreign}=?`).bind(id).run();return json({ok:true,removed:result.meta?.changes||0},200,env,request)}

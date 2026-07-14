@@ -15,6 +15,7 @@
     progression: null,
     leaderboards: null,
     communityEvents: null,
+    pushConfig: null,
     leaderboardCategory: "xp",
     leaderboardPeriod: "global",
     admin: null,
@@ -66,7 +67,8 @@
       ["generation", "Générations"], ["purchase", "Achats boutique"], ["wheel", "Roue"],
       ["chest_open", "Ouverture de coffres"], ["daily_claim", "Récompenses quotidiennes"],
       ["promo", "Codes promos"], ["mission_claim", "Missions récupérées"],
-      ["community_claim", "Récompenses d’événement"]
+      ["community_claim", "Récompenses d’événement"], ["daily_challenge_claim", "Défis quotidiens"],
+      ["gift_sent", "Cadeaux envoyés"], ["achievement_unlock", "Succès débloqués"]
     ];
     if (includeAny) options.push(["any", "Toutes les activités"]);
     return options.map(([value,label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`).join("");
@@ -240,16 +242,18 @@
   }
 
   async function loadBaseData() {
-    const [me, catalog, wallet, progression] = await Promise.all([
+    const [me, catalog, wallet, progression, pushConfig] = await Promise.all([
       api("/api/me"),
       api("/api/catalog"),
       api("/api/wallet"),
-      api("/api/progression")
+      api("/api/progression"),
+      api("/api/push/config").catch(() => ({configured:false,subscribed:false,public_key:""}))
     ]);
     state.me = me.user;
     state.catalog = catalog;
     state.wallet = wallet.items || [];
     state.progression = progression;
+    state.pushConfig = pushConfig;
   }
 
   async function refreshAll(renderAfter = true) {
@@ -383,8 +387,10 @@
   function productCard(p) {
     const infinite = p.infinite_stock === true || Number(p.stock) < 0;
     const unavailable = !infinite && Number(p.stock) <= 0;
-    return `<article class="card product-card ${p.item_key ? `rarity-${escapeHtml(p.rarity || "common")}` : ""}">
-      <div class="product-top"><div class="emoji-box">${escapeHtml(p.emoji)}</div><span class="badge badge-yellow">${formatNumber(p.price)} pts</span></div>
+    const deal = p.daily_deal === true && Number(p.discount_percent) > 0;
+    return `<article class="card product-card ${p.item_key ? `rarity-${escapeHtml(p.rarity || "common")}` : ""} ${deal ? "daily-deal-card" : ""}">
+      ${deal ? `<div class="daily-deal-ribbon">−${formatNumber(p.discount_percent)}%</div>` : ""}
+      <div class="product-top"><div class="emoji-box">${escapeHtml(p.emoji)}</div><span class="badge badge-yellow">${deal ? `<s>${formatNumber(p.base_price)}</s> ` : ""}${formatNumber(p.price)} pts</span></div>
       <div><h3>${escapeHtml(p.name)}</h3><p class="muted">${escapeHtml(p.description || "Récompense numérique.")}</p></div>
       <span class="stock">${infinite ? "∞ Stock illimité" : `${formatNumber(p.stock)} ligne(s) disponible(s)`}</span>
       <button class="btn btn-primary" data-buy="${escapeHtml(p.id)}" ${unavailable || state.me.points < p.price ? "disabled" : ""}>${unavailable ? "Rupture de stock" : state.me.points < p.price ? "Points insuffisants" : p.item_type === "ticket" ? "Acheter le ticket" : p.item_key ? "Acheter le coffre" : "Acheter"}</button>
@@ -394,6 +400,7 @@
   function shopPage() {
     return `<section class="page">
       <div class="section-head"><div><span class="eyebrow">BOUTIQUE POINTS</span><h2>Récompenses</h2><p>Chaque achat distribue la prochaine phrase ou ligne disponible.</p></div><div class="points-pill"><span>◈</span><b>${formatNumber(state.me.points)}</b><small>pts</small></div></div>
+      <article class="card daily-deals-banner"><div class="emoji-box">🛍️</div><div><h3>Offres du jour</h3><p class="muted">Une sélection d’articles reçoit automatiquement une nouvelle réduction chaque jour.</p></div><span class="badge badge-green">Mise à jour quotidienne</span></article>
       ${state.purchaseResult ? `<div class="line-result"><b>Achat réussi :</b><div class="secret-line">${escapeHtml(state.purchaseResult.value)}</div>${state.purchaseResult.kind === "inventory" ? `<button class="btn btn-green" data-page="wallet">Voir dans le Wallet</button>` : `<button class="btn btn-green" data-copy="${escapeHtml(state.purchaseResult.value)}">Copier la récompense</button>`}</div>` : ""}
       <div class="grid grid-3">${(state.catalog?.products || []).map(productCard).join("") || '<div class="empty">Aucune récompense en vente.</div>'}</div>
     </section>`;
@@ -404,7 +411,7 @@
     const inventory = state.progression?.inventory || [];
     const effects = state.progression?.effects || [];
     return `<section class="page">
-      <div class="section-head"><div><span class="eyebrow">WALLET & INVENTAIRE</span><h2>Tes objets et livraisons</h2><p>Utilise tes coffres et boosts, équipe tes titres et garde tes récompenses liées à ton compte Discord.</p></div></div>
+      <div class="section-head"><div><span class="eyebrow">WALLET & INVENTAIRE</span><h2>Tes objets et livraisons</h2><p>Utilise tes coffres et boosts, équipe tes titres et offre certains objets à d’autres membres.</p></div></div>
       ${effects.length ? `<article class="card active-effects"><h3>🔥 Effets actifs</h3>${effects.map(effect => `<div class="effect-row"><b>Boost XP ×${formatNumber(effect.multiplier)}</b><span>jusqu’au ${formatDate(effect.expires_at)}</span></div>`).join("")}</article>` : ""}
       <section class="section">
         <div class="section-head"><div><h2>Inventaire</h2><p>${formatNumber(inventory.reduce((sum,item)=>sum+Number(item.quantity || 0),0))} objet(s) possédé(s)</p></div></div>
@@ -478,6 +485,51 @@
     </section>`;
   }
 
+  function urlBase64ToUint8Array(base64String) {
+    const padding="=".repeat((4-base64String.length%4)%4);
+    const base64=(base64String+padding).replace(/-/g,"+").replace(/_/g,"/");
+    const raw=atob(base64);
+    return Uint8Array.from([...raw].map(char=>char.charCodeAt(0)));
+  }
+
+  async function enablePushNotifications() {
+    try {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) throw new Error("Les notifications push ne sont pas compatibles avec ce navigateur.");
+      if (!state.pushConfig?.configured || !state.pushConfig?.public_key) throw new Error("Les notifications push ne sont pas encore configurées sur le Worker.");
+      const permission=await Notification.requestPermission();
+      if (permission!=="granted") throw new Error("Autorisation de notification refusée.");
+      const registration=await navigator.serviceWorker.ready;
+      let subscription=await registration.pushManager.getSubscription();
+      if (!subscription) subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(state.pushConfig.public_key)});
+      await api("/api/push/subscribe",{method:"POST",body:JSON.stringify({subscription:subscription.toJSON(),notify_daily:true,notify_wheel:true})});
+      state.pushConfig={...state.pushConfig,subscribed:true};
+      showToast("Notifications push activées.");
+      render();
+    } catch(error) {showToast(error.message,true);}
+  }
+
+  async function disablePushNotifications() {
+    try {
+      const registration=await navigator.serviceWorker.ready;
+      const subscription=await registration.pushManager.getSubscription();
+      const endpoint=subscription?.endpoint || "";
+      if (subscription) await subscription.unsubscribe();
+      await api("/api/push/unsubscribe",{method:"POST",body:JSON.stringify({endpoint})});
+      state.pushConfig={...state.pushConfig,subscribed:false};
+      showToast("Notifications push désactivées.");
+      render();
+    } catch(error) {showToast(error.message,true);}
+  }
+
+  function settingsPage() {
+    const push=state.pushConfig || {};
+    const compatible=("serviceWorker" in navigator) && ("PushManager" in window) && ("Notification" in window);
+    return `<section class="page"><div class="section-head"><div><span class="eyebrow">PARAMÈTRES</span><h2>Notifications et application</h2><p>Gère les alertes liées à ton compte.</p></div></div>
+      <article class="card push-settings-card"><div class="emoji-box">🔔</div><div><h3>Notifications push</h3><p class="muted">Reçois une alerte lorsque ta récompense quotidienne ou tes tours de roue sont disponibles, même lorsque le site est fermé.</p><div class="toolbar"><span class="badge ${push.subscribed ? "badge-green" : "badge-yellow"}">${push.subscribed ? "Activées" : "Désactivées"}</span><span class="badge ${compatible && push.configured ? "badge-green" : "badge-red"}">${compatible && push.configured ? "Compatible" : "Indisponible"}</span></div></div><button class="btn ${push.subscribed ? "btn-secondary" : "btn-primary"}" data-${push.subscribed ? "disable" : "enable"}-push ${!compatible || !push.configured ? "disabled" : ""}>${push.subscribed ? "Désactiver" : "Activer les notifications"}</button></article>
+      <article class="card"><h3>📱 Conseil</h3><p class="muted">Sur iPhone, installe d’abord OpiumStore sur l’écran d’accueil, puis ouvre l’application installée pour activer les notifications.</p><button class="btn btn-secondary" data-page="appinstall">Installer l’application</button></article>
+    </section>`;
+  }
+
   function appInstallPage() {
     const installed = isStandaloneApp();
     const canPrompt = !!state.installPrompt;
@@ -496,16 +548,34 @@
     </section>`;
   }
 
+  function dailyChallengeCard(challenge) {
+    const ready=challenge.completed && !challenge.claimed;
+    return `<article class="mission-card daily-challenge ${challenge.claimed ? "claimed" : ready ? "ready" : ""}">
+      <div class="mission-top"><span class="mission-scope">QUOTIDIEN</span><span>${challenge.claimed ? "Récupéré" : ready ? "Terminé" : `${formatNumber(challenge.progress)} / ${formatNumber(challenge.target)}`}</span></div>
+      <h3>${escapeHtml(challenge.emoji)} ${escapeHtml(challenge.title)}</h3><p>${escapeHtml(challenge.description)}</p>
+      <div class="progress-track small"><span style="width:${challenge.percent}%"></span></div>
+      <div class="mission-reward"><span>🎁 ${formatNumber(challenge.reward_points)} pts · ${formatNumber(challenge.reward_xp)} XP${challenge.reward_item_key ? ` · ${escapeHtml(challenge.reward_item_key)}` : ""}</span><button class="btn btn-small ${ready ? "btn-green" : "btn-secondary"}" data-claim-daily-challenge="${challenge.slot}" ${ready ? "" : "disabled"}>${challenge.claimed ? "Récupéré" : ready ? "Récupérer" : "En cours"}</button></div>
+    </article>`;
+  }
+
+  function achievementCard(achievement) {
+    return `<article class="achievement-card ${achievement.unlocked ? "unlocked" : "locked"}"><div class="achievement-icon">${escapeHtml(achievement.emoji)}</div><div><span class="eyebrow">${achievement.unlocked ? "SUCCÈS DÉBLOQUÉ" : "SUCCÈS SECRET"}</span><h3>${escapeHtml(achievement.title)}</h3><p class="muted">${escapeHtml(achievement.description)}</p>${achievement.unlocked ? `<small>🎁 ${formatNumber(achievement.reward_points)} pts · ${formatNumber(achievement.reward_xp)} XP${achievement.reward_item_key ? ` · ${escapeHtml(achievement.reward_item_key)}` : ""}</small>` : ""}</div></article>`;
+  }
+
   function progressionPage() {
     const data = state.progression || {};
     const p = data.profile || {};
     const daily = data.daily || {};
     const classic = (data.missions || []).filter(m => m.scope === "classic");
     const weekly = (data.missions || []).filter(m => m.scope === "weekly");
+    const dailyChallenges = data.daily_challenges || [];
+    const achievements = data.secret_achievements || [];
     return `<section class="page">
       <div class="section-head"><div><span class="eyebrow">NIVEAUX ET XP</span><h2>Ta progression</h2><p>Gagne de l’XP avec toutes les activités du Hub et débloque des récompenses de niveaux.</p></div><span class="badge badge-yellow">⭐ ${formatNumber(p.xp_total || 0)} XP</span></div>
       <div class="grid grid-2">${xpCard()}<article class="card streak-card"><div class="streak-flame">🔥</div><div><span class="eyebrow">SÉRIE DE CONNEXION</span><h3>${formatNumber(p.streak_current || 0)} jour(s)</h3><p>Meilleur record : <b>${formatNumber(p.streak_best || 0)} jour(s)</b></p></div><button class="btn btn-green" data-claim-daily ${daily.can_claim ? "" : "disabled"}>${daily.can_claim ? `Récupérer ${formatNumber(daily.next_points)} pts + ${formatNumber(daily.next_xp)} XP` : "Récompense déjà récupérée"}</button></article></div>
       <section class="section"><article class="card promo-card promo-card-link"><div><h3>🎟️ Tu as un code promo ?</h3><p class="muted">Ouvre la page dédiée pour récupérer tes points, ton XP ou ton coffre.</p></div><button class="btn btn-primary" data-page="promo">Utiliser un code</button></article></section>
+      <section class="section"><div class="section-head"><div><h2>🎯 Défis quotidiens</h2><p>Trois objectifs personnels sont tirés automatiquement chaque jour.</p></div></div><div class="mission-grid">${dailyChallenges.map(dailyChallengeCard).join("") || '<div class="empty">Aucun défi quotidien.</div>'}</div></section>
+      <section class="section"><div class="section-head"><div><h2>🕵️ Succès secrets</h2><p>Les objectifs restent cachés jusqu’à leur déblocage.</p></div></div><div class="achievement-grid">${achievements.map(achievementCard).join("") || '<div class="empty">Aucun succès secret.</div>'}</div></section>
       <section class="section"><div class="section-head"><div><h2>Missions hebdomadaires</h2><p>La progression repart chaque semaine.</p></div></div><div class="mission-grid">${weekly.map(missionCard).join("") || '<div class="empty">Aucune mission hebdomadaire.</div>'}</div></section>
       <section class="section"><div class="section-head"><div><h2>Missions classiques</h2><p>Des objectifs permanents pour avancer à ton rythme.</p></div></div><div class="mission-grid">${classic.map(missionCard).join("") || '<div class="empty">Aucune mission classique.</div>'}</div></section>
     </section>`;
@@ -517,7 +587,8 @@
     else if (["title","cosmetic"].includes(item.item_type)) action = `<button class="btn btn-small ${item.equipped ? "btn-green" : "btn-secondary"}" data-equip-item="${escapeHtml(item.item_key)}" ${item.equipped ? "disabled" : ""}>${item.equipped ? "Équipé" : "Équiper"}</button>`;
     else if (item.item_type === "ticket") action = `<span class="inventory-note">Utilisé automatiquement par la roue</span>`;
     else if (item.item_type === "protector") action = `<span class="inventory-note">Protection automatique</span>`;
-    return `<article class="inventory-card rarity-${escapeHtml(item.rarity)}"><div class="inventory-icon">${escapeHtml(item.emoji)}</div><div class="inventory-copy"><span class="rarity-chip">${rarityName(item.rarity)}</span><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.description)}</p><b>Quantité : ${formatNumber(item.quantity)}</b></div>${action}</article>`;
+    const gift = item.giftable ? `<button class="btn btn-small btn-secondary" data-gift-item="${escapeHtml(item.item_key)}" data-gift-name="${escapeHtml(item.name)}">🎁 Offrir</button>` : "";
+    return `<article class="inventory-card rarity-${escapeHtml(item.rarity)}"><div class="inventory-icon">${escapeHtml(item.emoji)}</div><div class="inventory-copy"><span class="rarity-chip">${rarityName(item.rarity)}</span><h3>${escapeHtml(item.name)}</h3><p>${escapeHtml(item.description)}</p><b>Quantité : ${formatNumber(item.quantity)}</b></div><div class="inventory-actions">${action}${gift}</div></article>`;
   }
 
   function leaderboardScore(entry) {
@@ -768,7 +839,9 @@
 
   function adminSettings() {
     const settings = state.admin.settings || {};
+    const discord = state.admin.discord_integration || {};
     return `<div class="admin-list">
+      <article class="admin-card"><h3>🤖 Intégration Discord</h3><p class="muted">Les rangs sont synchronisés lors de chaque connexion Discord. Le salon de réassort correspond au salon dans lequel le webhook Discord a été créé.</p><div class="form-grid"><div class="field"><label>Serveur Discord</label><input class="input" value="${discord.guild_configured ? "Configuré" : "DISCORD_GUILD_ID manquant"}" disabled></div><div class="field"><label>Rôle Boost</label><input class="input" value="${discord.boost_role_configured ? "Configuré" : "DISCORD_BOOST_ROLE_ID manquant"}" disabled></div><div class="field"><label>Rôle VIP</label><input class="input" value="${discord.vip_role_configured ? "Configuré" : "DISCORD_VIP_ROLE_ID manquant"}" disabled></div><div class="field"><label>Annonce de réassort</label><input class="input" value="${discord.restock_webhook_configured && discord.client_role_configured ? "Webhook + rôle client configurés" : "Webhook ou rôle client manquant"}" disabled></div></div></article>
       <article class="admin-card"><h3>🛡️ Limites automatiques par rang</h3><p class="muted">Les quotas et cooldowns ne sont plus modifiables manuellement : Free = 6/jour et 15 min · Boost = 15/jour et 2 min · VIP/Admin = illimité et 1 min. La roue se recharge toutes les 12 heures avec 1, 2 ou 3 tours gratuits selon le rang.</p><div class="form-grid"><div class="field"><label>Cycle de la roue</label><input class="input" value="12 heures (fixe)" disabled></div><div class="field"><label>Points de départ</label><input id="settingStartPoints" class="input" type="number" min="0" value="${escapeHtml(settings.starting_points || 500)}"></div></div></article>
       <article class="admin-card"><h3>⭐ Récompenses XP</h3><div class="form-grid"><div class="field"><label>XP par génération</label><input id="settingXpGeneration" class="input" type="number" min="0" value="${escapeHtml(settings.xp_generation ?? 20)}"></div><div class="field"><label>XP par achat</label><input id="settingXpPurchase" class="input" type="number" min="0" value="${escapeHtml(settings.xp_purchase ?? 35)}"></div><div class="field"><label>XP par roue</label><input id="settingXpWheel" class="input" type="number" min="0" value="${escapeHtml(settings.xp_wheel ?? 15)}"></div><div class="field"><label>XP ouverture coffre</label><input id="settingXpChest" class="input" type="number" min="0" value="${escapeHtml(settings.xp_chest ?? 25)}"></div><div class="field"><label>Points quotidiens de base</label><input id="settingDailyPoints" class="input" type="number" min="0" value="${escapeHtml(settings.daily_base_points ?? 50)}"></div><div class="field"><label>XP quotidienne de base</label><input id="settingDailyXp" class="input" type="number" min="0" value="${escapeHtml(settings.daily_base_xp ?? 30)}"></div></div></article>
       <button id="saveSettingsBtn" class="btn btn-primary">Enregistrer les récompenses</button><p class="muted">Les bonus Boost (+20 %) et VIP/Admin (+50 %) sont appliqués automatiquement côté serveur.</p></div>`;
@@ -778,7 +851,7 @@
     if (!state.me || !state.catalog || !state.progression) return;
     setUserChrome();
     $$('[data-page]').forEach(el => el.classList.toggle("active", el.dataset.page === state.page));
-    const titles = {home:"Accueil",generator:"Générateur",vip:"VIP & offres",shop:"Boutique points",promo:"Code promo",wheel:"Roue",progression:"Progression",leaderboards:"Classements",events:"Événements",wallet:"Wallet & inventaire",appinstall:"Installer l’application",admin:"Administration"};
+    const titles = {home:"Accueil",generator:"Générateur",vip:"VIP & offres",shop:"Boutique points",promo:"Code promo",wheel:"Roue",progression:"Progression",leaderboards:"Classements",events:"Événements",wallet:"Wallet & inventaire",settings:"Paramètres",appinstall:"Installer l’application",admin:"Administration"};
     $("#pageTitle").textContent = titles[state.page] || "OpiumStore Hub";
     if (state.page === "generator") main.innerHTML = generatorPage();
     else if (state.page === "vip") main.innerHTML = vipPage();
@@ -790,6 +863,7 @@
     else if (state.page === "leaderboards") main.innerHTML = leaderboardsPage();
     else if (state.page === "events") main.innerHTML = eventsPage();
     else if (state.page === "wallet") main.innerHTML = walletPage();
+    else if (state.page === "settings") main.innerHTML = settingsPage();
     else if (state.page === "admin") main.innerHTML = adminPage();
     else main.innerHTML = homePage();
   }
@@ -938,8 +1012,14 @@
 
   async function adminRequest(path, method, body, success) {
     try {
-      await api(path, {method, body: body === undefined ? undefined : JSON.stringify(body)});
-      showToast(success);
+      const result = await api(path, {method, body: body === undefined ? undefined : JSON.stringify(body)});
+      let message = success;
+      if (result?.discord_announcement) {
+        if (result.discord_announcement.sent) message += " Annonce Discord envoyée dans le salon de réassort.";
+        else if (result.discord_announcement.reason === "webhook_missing") message += " Annonce Discord non envoyée : webhook non configuré.";
+        else message += " Le stock est ajouté, mais l’annonce Discord a échoué.";
+      }
+      showToast(message, !!(result?.discord_announcement && !result.discord_announcement.sent));
       state.admin = await api("/api/admin/overview");
       state.adminHistory = state.admin.history || state.adminHistory;
       await refreshAll(false);
@@ -1025,12 +1105,23 @@
     if (closeReward) { $("#modal").classList.add("hidden"); $("#modal").setAttribute("aria-hidden","true"); return; }
     const claimDaily = event.target.closest("[data-claim-daily]");
     if (claimDaily) { await progressionAction("/api/daily/claim", undefined, "Récompense quotidienne"); return; }
+    const claimDailyChallenge = event.target.closest("[data-claim-daily-challenge]");
+    if (claimDailyChallenge) { await progressionAction(`/api/daily-challenges/${encodeURIComponent(claimDailyChallenge.dataset.claimDailyChallenge)}/claim`, undefined, "Défi quotidien terminé"); return; }
     const claimMission = event.target.closest("[data-claim-mission]");
     if (claimMission) { await progressionAction(`/api/missions/${encodeURIComponent(claimMission.dataset.claimMission)}/claim`, undefined, "Mission terminée"); return; }
     const useItem = event.target.closest("[data-use-item]");
     if (useItem) { await progressionAction("/api/inventory/use", {item_key:useItem.dataset.useItem}, "Objet utilisé"); return; }
     const equipItem = event.target.closest("[data-equip-item]");
     if (equipItem) { await progressionAction("/api/inventory/equip", {item_key:equipItem.dataset.equipItem}, "Objet équipé"); return; }
+    const giftItem = event.target.closest("[data-gift-item]");
+    if (giftItem) {
+      const receiver=prompt(`ID Discord du membre qui recevra « ${giftItem.dataset.giftName || "cet objet"} » :`);
+      if (!receiver) return;
+      const quantity=Number(prompt("Quantité à offrir :","1") || 0);
+      if (!Number.isInteger(quantity) || quantity<1) return showToast("Quantité invalide.",true);
+      await progressionAction("/api/inventory/gift",{item_key:giftItem.dataset.giftItem,receiver_discord_id:receiver.trim(),quantity},"Cadeau envoyé");
+      return;
+    }
     const redeemPromo = event.target.closest("[data-redeem-promo]");
     if (redeemPromo) { const code=String($("#promoCodeInput")?.value||"").trim(); if(!code)return showToast("Entre un code promo.",true); await progressionAction("/api/promo/redeem", {code}, "Code promo utilisé"); return; }
     const claimEvent = event.target.closest("[data-claim-event]");
@@ -1080,6 +1171,10 @@
       await saveUserTimer({discordId:$("#timerDiscordId").value,type:$("#timerType").value,serviceId:$("#timerService").value,seconds:$("#timerSeconds").value});
       return;
     }
+    const enablePush=event.target.closest("[data-enable-push]");
+    if (enablePush) {await enablePushNotifications();return;}
+    const disablePush=event.target.closest("[data-disable-push]");
+    if (disablePush) {await disablePushNotifications();return;}
     if (event.target.id === "installAppBtn") { await installApplication(); return; }
     if (event.target.id === "spinBtn") { await handleSpin(); return; }
     if (event.target.id === "createCommunityEventBtn") {
@@ -1142,7 +1237,7 @@
   async function init() {
     try {
       if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("./sw.js?v=20260713-v76", {updateViaCache:"none"})
+        navigator.serviceWorker.register("./sw.js?v=20260714-v77", {updateViaCache:"none"})
           .then(registration => registration.update())
           .catch(error => console.warn("Service Worker:", error));
       }

@@ -100,3 +100,57 @@
 .service-locked,.mission-locked{opacity:.72;border-style:dashed!important;filter:saturate(.72)}
 .access-locked{color:#ff9eac;font-weight:800}
 .access-granted{color:#8ff0bb;font-weight:800}
+
+/* ===== V7.7 : offres du jour, défis, succès, cadeaux et push ===== */
+.daily-deals-banner,
+.push-settings-card {
+  display:flex;
+  align-items:center;
+  gap:16px;
+  flex-wrap:wrap;
+}
+.daily-deals-banner > div:nth-child(2),
+.push-settings-card > div:nth-child(2) { flex:1; min-width:220px; }
+.daily-deal-card { position:relative; overflow:hidden; border-color:rgba(34,197,94,.48); }
+.daily-deal-ribbon {
+  position:absolute;
+  top:14px;
+  right:-35px;
+  width:135px;
+  padding:6px 8px;
+  transform:rotate(38deg);
+  text-align:center;
+  font-weight:900;
+  font-size:.78rem;
+  background:linear-gradient(135deg,#22c55e,#16a34a);
+  color:#fff;
+  box-shadow:0 8px 28px rgba(34,197,94,.28);
+}
+.daily-deal-card s { opacity:.6; margin-right:4px; }
+.achievement-grid {
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:14px;
+}
+.achievement-card {
+  display:flex;
+  gap:14px;
+  padding:18px;
+  border-radius:20px;
+  border:1px solid rgba(148,163,184,.17);
+  background:rgba(15,23,42,.66);
+}
+.achievement-card.locked { filter:saturate(.45); opacity:.72; }
+.achievement-card.unlocked { border-color:rgba(250,204,21,.45); box-shadow:0 0 30px rgba(250,204,21,.08); }
+.achievement-icon { font-size:2rem; line-height:1; }
+.inventory-actions { display:flex; flex-direction:column; gap:8px; align-items:stretch; }
+.push-settings-card .btn { margin-left:auto; }
+.daily-challenge { border-color:rgba(34,197,94,.24); }
+@media (max-width:900px) {
+  .achievement-grid { grid-template-columns:1fr 1fr; }
+}
+@media (max-width:620px) {
+  .achievement-grid { grid-template-columns:1fr; }
+  .push-settings-card .btn { width:100%; margin-left:0; }
+  .inventory-actions { width:100%; }
+}

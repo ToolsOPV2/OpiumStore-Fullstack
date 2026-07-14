@@ -3,6 +3,12 @@ main = "src/index.js"
 compatibility_date = "2026-07-12"
 
 [vars]
+VAPID_SUBJECT = "mailto:opiumstoregen@gmail.com"
+VAPID_PUBLIC_KEY = "BNkWmnb1GkY5DO8ss8p-JxjWTtHokgpIJZM_MzNmYlTqEUBSl05xk6O630ye2_4MOTZrvuYq0OGNQYiO6XYxkyQ"
+DISCORD_CLIENT_ROLE_ID = "1518913330914529380"
+DISCORD_VIP_ROLE_ID = "1521067390199136306"
+DISCORD_BOOST_ROLE_ID = "1521817444019208284"
+DISCORD_GUILD_ID = "1518911579817509015"
 FRONTEND_ORIGIN = "https://opiumstore-hub.onrender.com"
 DISCORD_REDIRECT_URI = "https://opiumstore-api.opiumstore.workers.dev/auth/discord/callback"
 ADMIN_DISCORD_IDS = "1456328839062880409"
@@ -11,3 +17,6 @@ ADMIN_DISCORD_IDS = "1456328839062880409"
 binding = "DB"
 database_name = "opiumstore-db"
 database_id = "1ccf6b9b-d1ab-40a1-81d6-6d2c9dfd4b59"
+
+[triggers]
+crons = ["*/30 * * * *"]
