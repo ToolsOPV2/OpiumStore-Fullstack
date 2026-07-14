@@ -16,6 +16,7 @@
     leaderboards: null,
     communityEvents: null,
     pushConfig: null,
+    discordSync: null,
     leaderboardCategory: "xp",
     leaderboardPeriod: "global",
     admin: null,
@@ -250,6 +251,7 @@
       api("/api/push/config").catch(() => ({configured:false,subscribed:false,public_key:""}))
     ]);
     state.me = me.user;
+    state.discordSync = me.discord_sync || null;
     state.catalog = catalog;
     state.wallet = wallet.items || [];
     state.progression = progression;
@@ -524,7 +526,11 @@
   function settingsPage() {
     const push=state.pushConfig || {};
     const compatible=("serviceWorker" in navigator) && ("PushManager" in window) && ("Notification" in window);
-    return `<section class="page"><div class="section-head"><div><span class="eyebrow">PARAMÈTRES</span><h2>Notifications et application</h2><p>Gère les alertes liées à ton compte.</p></div></div>
+    const sync=state.discordSync || {};
+    const currentRank=rankInfo(state.me?.account_rank);
+    const syncText=sync.ok ? `${sync.message || "Rôles synchronisés."} Source : ${sync.source || "Discord"}.` : (sync.message || "La synchronisation automatique n’a pas encore été vérifiée.");
+    return `<section class="page"><div class="section-head"><div><span class="eyebrow">PARAMÈTRES</span><h2>Notifications et application</h2><p>Gère les alertes et ton rang Discord.</p></div></div>
+      <article class="card push-settings-card"><div class="emoji-box">🎭</div><div><h3>Rang Discord</h3><p class="muted">Rang actuel : <b>${currentRank.emoji} ${currentRank.label}</b>. Le site vérifie automatiquement les rôles VIP et Boost au chargement.</p><p class="muted">${escapeHtml(syncText)}</p><div class="toolbar"><span class="badge ${sync.ok ? "badge-green" : "badge-yellow"}">${sync.ok ? "Synchronisé" : "À vérifier"}</span>${sync.has_vip_role ? '<span class="badge badge-yellow">Rôle VIP détecté</span>' : ""}${sync.has_boost_role ? '<span class="badge badge-green">Rôle Boost détecté</span>' : ""}</div></div><button class="btn btn-primary" data-sync-discord-rank>Synchroniser maintenant</button></article>
       <article class="card push-settings-card"><div class="emoji-box">🔔</div><div><h3>Notifications push</h3><p class="muted">Reçois une alerte lorsque ta récompense quotidienne ou tes tours de roue sont disponibles, même lorsque le site est fermé.</p><div class="toolbar"><span class="badge ${push.subscribed ? "badge-green" : "badge-yellow"}">${push.subscribed ? "Activées" : "Désactivées"}</span><span class="badge ${compatible && push.configured ? "badge-green" : "badge-red"}">${compatible && push.configured ? "Compatible" : "Indisponible"}</span></div></div><button class="btn ${push.subscribed ? "btn-secondary" : "btn-primary"}" data-${push.subscribed ? "disable" : "enable"}-push ${!compatible || !push.configured ? "disabled" : ""}>${push.subscribed ? "Désactiver" : "Activer les notifications"}</button></article>
       <article class="card"><h3>📱 Conseil</h3><p class="muted">Sur iPhone, installe d’abord OpiumStore sur l’écran d’accueil, puis ouvre l’application installée pour activer les notifications.</p><button class="btn btn-secondary" data-page="appinstall">Installer l’application</button></article>
     </section>`;
@@ -769,6 +775,7 @@
             <div class="field"><label>Limites automatiques</label><input class="input" value="${quotaLabel} · cooldown ${remaining(u.generation_cooldown_seconds)}" disabled></div>
             <div class="field"><label>Tours gratuits / 12 h</label><input class="input" value="${formatNumber(u.rank?.wheel_free_spins || 1)}" disabled></div>
             <div class="field"><label>Bonus quotidien</label><input class="input" value="+${Math.round(((u.rank?.daily_reward_multiplier || 1)-1)*100)} %" disabled></div>
+            <div class="field"><label>Synchronisation Discord</label><div class="toolbar"><button class="btn btn-secondary btn-small" data-sync-user-rank="${u.discord_id}">Resynchroniser</button><span class="badge ${u.discord_sync_success ? "badge-green" : "badge-yellow"}">${u.has_vip_role ? "VIP détecté" : u.has_boost_role ? "Boost détecté" : u.discord_sync_success ? "Aucun rôle premium" : "Non vérifié"}</span></div><small class="muted">${u.discord_synced_at ? `Dernière vérification : ${formatDate(u.discord_synced_at)} · source ${escapeHtml(u.discord_sync_source || "?")}` : "Aucune vérification enregistrée."}</small></div>
             <div class="field"><label>Timer actif</label><button class="btn btn-secondary" data-open-user-timer="${u.discord_id}">Voir / réinitialiser</button></div>
           </div></article>`;
       }).join("") : `<article class="admin-card"><div class="empty">Aucun utilisateur enregistré.</div></article>`}
@@ -841,7 +848,7 @@
     const settings = state.admin.settings || {};
     const discord = state.admin.discord_integration || {};
     return `<div class="admin-list">
-      <article class="admin-card"><h3>🤖 Intégration Discord</h3><p class="muted">Les rangs sont synchronisés lors de chaque connexion Discord. Le salon de réassort correspond au salon dans lequel le webhook Discord a été créé.</p><div class="form-grid"><div class="field"><label>Serveur Discord</label><input class="input" value="${discord.guild_configured ? "Configuré" : "DISCORD_GUILD_ID manquant"}" disabled></div><div class="field"><label>Rôle Boost</label><input class="input" value="${discord.boost_role_configured ? "Configuré" : "DISCORD_BOOST_ROLE_ID manquant"}" disabled></div><div class="field"><label>Rôle VIP</label><input class="input" value="${discord.vip_role_configured ? "Configuré" : "DISCORD_VIP_ROLE_ID manquant"}" disabled></div><div class="field"><label>Annonce de réassort</label><input class="input" value="${discord.restock_webhook_configured && discord.client_role_configured ? "Webhook + rôle client configurés" : "Webhook ou rôle client manquant"}" disabled></div></div></article>
+      <article class="admin-card"><h3>🤖 Intégration Discord</h3><p class="muted">Le bot vérifie les rôles toutes les cinq minutes et à chaque connexion. Le salon de réassort correspond au salon dans lequel le webhook Discord a été créé.</p><div class="form-grid"><div class="field"><label>Serveur Discord</label><input class="input" value="${discord.guild_configured ? "Configuré" : "DISCORD_GUILD_ID manquant"}" disabled></div><div class="field"><label>Bot de synchronisation</label><input class="input" value="${discord.bot_token_configured ? "DISCORD_BOT_TOKEN configuré" : "DISCORD_BOT_TOKEN manquant"}" disabled></div><div class="field"><label>Rôle Boost</label><input class="input" value="${discord.boost_role_configured ? "Configuré" : "DISCORD_BOOST_ROLE_ID manquant"}" disabled></div><div class="field"><label>Rôle VIP</label><input class="input" value="${discord.vip_role_configured ? "Configuré" : "DISCORD_VIP_ROLE_ID manquant"}" disabled></div><div class="field"><label>Annonce de réassort</label><input class="input" value="${discord.restock_webhook_configured && discord.client_role_configured ? "Webhook + rôle client configurés" : "Webhook ou rôle client manquant"}" disabled></div></div></article>
       <article class="admin-card"><h3>🛡️ Limites automatiques par rang</h3><p class="muted">Les quotas et cooldowns ne sont plus modifiables manuellement : Free = 6/jour et 15 min · Boost = 15/jour et 2 min · VIP/Admin = illimité et 1 min. La roue se recharge toutes les 12 heures avec 1, 2 ou 3 tours gratuits selon le rang.</p><div class="form-grid"><div class="field"><label>Cycle de la roue</label><input class="input" value="12 heures (fixe)" disabled></div><div class="field"><label>Points de départ</label><input id="settingStartPoints" class="input" type="number" min="0" value="${escapeHtml(settings.starting_points || 500)}"></div></div></article>
       <article class="admin-card"><h3>⭐ Récompenses XP</h3><div class="form-grid"><div class="field"><label>XP par génération</label><input id="settingXpGeneration" class="input" type="number" min="0" value="${escapeHtml(settings.xp_generation ?? 20)}"></div><div class="field"><label>XP par achat</label><input id="settingXpPurchase" class="input" type="number" min="0" value="${escapeHtml(settings.xp_purchase ?? 35)}"></div><div class="field"><label>XP par roue</label><input id="settingXpWheel" class="input" type="number" min="0" value="${escapeHtml(settings.xp_wheel ?? 15)}"></div><div class="field"><label>XP ouverture coffre</label><input id="settingXpChest" class="input" type="number" min="0" value="${escapeHtml(settings.xp_chest ?? 25)}"></div><div class="field"><label>Points quotidiens de base</label><input id="settingDailyPoints" class="input" type="number" min="0" value="${escapeHtml(settings.daily_base_points ?? 50)}"></div><div class="field"><label>XP quotidienne de base</label><input id="settingDailyXp" class="input" type="number" min="0" value="${escapeHtml(settings.daily_base_xp ?? 30)}"></div></div></article>
       <button id="saveSettingsBtn" class="btn btn-primary">Enregistrer les récompenses</button><p class="muted">Les bonus Boost (+20 %) et VIP/Admin (+50 %) sont appliqués automatiquement côté serveur.</p></div>`;
@@ -1087,6 +1094,7 @@
     if (target.dataset.deleteMission) return confirm("Supprimer définitivement cette quête et toutes ses progressions ?") && adminRequest(`/api/admin/missions/${encodeURIComponent(target.dataset.deleteMission)}`, "DELETE", undefined, "Quête supprimée.");
 
     if (target.dataset.userRank) { const discordId=target.dataset.userRank; return adminRequest(`/api/admin/users/${encodeURIComponent(discordId)}/rank`, "PUT", {rank:$(`#user-rank-${discordId}`).value}, "Rang utilisateur enregistré."); }
+    if (target.dataset.syncUserRank) return adminRequest(`/api/admin/users/${encodeURIComponent(target.dataset.syncUserRank)}/sync-discord-rank`, "POST", {}, "Rôle Discord resynchronisé.");
     if (target.dataset.userPoints) return adminRequest(`/api/admin/users/${target.dataset.userPoints}/points`, "POST", {delta:Number($(`#user-points-${target.dataset.userPoints}`).value)}, "Points ajustés.");
   }
 
@@ -1165,10 +1173,21 @@
       await saveUserTimer({discordId:resetTimer.dataset.timerUser,type:resetTimer.dataset.timerType,serviceId:resetTimer.dataset.timerService || "",seconds:0});
       return;
     }
-    const adminAction = event.target.closest("[data-save-service],[data-restock-service],[data-clear-service],[data-delete-service],[data-toggle-service],[data-save-product],[data-restock-product],[data-clear-product],[data-delete-product],[data-toggle-product],[data-save-wheel],[data-delete-wheel],[data-save-community-event],[data-reset-community-event],[data-delete-community-event],[data-save-mission],[data-reset-mission],[data-delete-mission],[data-user-rank],[data-user-points]");
+    const adminAction = event.target.closest("[data-save-service],[data-restock-service],[data-clear-service],[data-delete-service],[data-toggle-service],[data-save-product],[data-restock-product],[data-clear-product],[data-delete-product],[data-toggle-product],[data-save-wheel],[data-delete-wheel],[data-save-community-event],[data-reset-community-event],[data-delete-community-event],[data-save-mission],[data-reset-mission],[data-delete-mission],[data-user-rank],[data-sync-user-rank],[data-user-points]");
     if (adminAction) { await handleAdminAction(adminAction); return; }
     if (event.target.id === "applyUserTimerBtn") {
       await saveUserTimer({discordId:$("#timerDiscordId").value,type:$("#timerType").value,serviceId:$("#timerService").value,seconds:$("#timerSeconds").value});
+      return;
+    }
+    const syncDiscordRank=event.target.closest("[data-sync-discord-rank]");
+    if (syncDiscordRank) {
+      try {
+        const result=await api("/api/account/sync-discord-rank",{method:"POST"});
+        state.me=result.user;
+        state.discordSync=result.discord_sync;
+        await refreshAll();
+        showToast(`${result.discord_sync.message} Rang actuel : ${rankInfo(result.user.account_rank).label}.`);
+      } catch(error) { showToast(error.message,true); }
       return;
     }
     const enablePush=event.target.closest("[data-enable-push]");
@@ -1237,7 +1256,7 @@
   async function init() {
     try {
       if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("./sw.js?v=20260714-v77", {updateViaCache:"none"})
+        navigator.serviceWorker.register("./sw.js?v=20260714-v78", {updateViaCache:"none"})
           .then(registration => registration.update())
           .catch(error => console.warn("Service Worker:", error));
       }

@@ -26,7 +26,7 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
-      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"progression-v7.7"}, 200, env, request);
+      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"progression-v7.8"}, 200, env, request);
       if (path === "/auth/discord/start" && request.method === "GET") return await startDiscordAuth(env);
       if (path === "/auth/discord/callback" && request.method === "GET") return await discordCallback(request, env);
       if (path === "/auth/exchange" && request.method === "POST") return await exchangeLoginCode(request, env);
@@ -34,7 +34,17 @@ export default {
       validateOrigin(request, env);
       const user = await requireUser(request, env);
 
-      if (path === "/api/me" && request.method === "GET") return json({user: publicUser(user, env)}, 200, env, request);
+      if (path === "/api/me" && request.method === "GET") {
+        const discord_sync=await synchronizeDiscordRank(user,env,{force:false});
+        user.account_rank=await loadUserRank(user,env);
+        return json({user:publicUser(user,env),discord_sync},200,env,request);
+      }
+      if (path === "/api/account/sync-discord-rank" && request.method === "POST") {
+        const discord_sync=await synchronizeDiscordRank(user,env,{force:true});
+        user.account_rank=await loadUserRank(user,env);
+        if (!discord_sync.ok) throw httpError(409,discord_sync.message,{discord_sync,user:publicUser(user,env)});
+        return json({ok:true,user:publicUser(user,env),discord_sync},200,env,request);
+      }
       if (path === "/api/logout" && request.method === "POST") return await logout(request, user, env);
       if (path === "/api/catalog" && request.method === "GET") return await getCatalog(user, env, request);
       if (path === "/api/wallet" && request.method === "GET") return await getWallet(user, env, request);
@@ -245,29 +255,107 @@ async function startDiscordAuth(env) {
   return redirect(`https://discord.com/oauth2/authorize?${params}`, cookie);
 }
 
-async function discordRankFromRoles(accessToken, env) {
-  const guildId = String(env.DISCORD_GUILD_ID || "").trim();
-  const boostRoleId = String(env.DISCORD_BOOST_ROLE_ID || "").trim();
-  const vipRoleId = String(env.DISCORD_VIP_ROLE_ID || "").trim();
-  if (!guildId || (!boostRoleId && !vipRoleId)) return null;
+function discordRoleConfiguration(env) {
+  return {
+    guild_id:String(env.DISCORD_GUILD_ID || "").trim(),
+    boost_role_id:String(env.DISCORD_BOOST_ROLE_ID || "").trim(),
+    vip_role_id:String(env.DISCORD_VIP_ROLE_ID || "").trim(),
+    bot_token:String(env.DISCORD_BOT_TOKEN || "").trim()
+  };
+}
+
+function discordRankFromRoleIds(roleIds, env) {
+  const config=discordRoleConfiguration(env);
+  const roles=new Set(Array.isArray(roleIds)?roleIds.map(String):[]);
+  if (config.vip_role_id && roles.has(config.vip_role_id)) return "vip";
+  if (config.boost_role_id && roles.has(config.boost_role_id)) return "boost";
+  return "free";
+}
+
+async function readDiscordMemberByBot(discordUserId, env) {
+  const config=discordRoleConfiguration(env);
+  if (!config.guild_id || !config.bot_token) return {ok:false,source:"bot",status:0,error:"DISCORD_GUILD_ID ou DISCORD_BOT_TOKEN manquant."};
   try {
-    const response = await fetch(`${DISCORD_API}/users/@me/guilds/${encodeURIComponent(guildId)}/member`, {
+    const response=await fetch(`${DISCORD_API}/guilds/${encodeURIComponent(config.guild_id)}/members/${encodeURIComponent(discordUserId)}`,{
+      headers:{Authorization:`Bot ${config.bot_token}`}
+    });
+    if (response.status===404) return {ok:true,source:"bot",status:404,member:null,roles:[]};
+    const text=await response.text();
+    if (!response.ok) return {ok:false,source:"bot",status:response.status,error:text.slice(0,500)};
+    const member=JSON.parse(text);
+    return {ok:true,source:"bot",status:response.status,member,roles:Array.isArray(member.roles)?member.roles.map(String):[]};
+  } catch(error) {
+    return {ok:false,source:"bot",status:0,error:String(error?.message || error)};
+  }
+}
+
+async function readDiscordMemberByOAuth(accessToken, env) {
+  const config=discordRoleConfiguration(env);
+  if (!config.guild_id || !accessToken) return {ok:false,source:"oauth",status:0,error:"Jeton OAuth ou DISCORD_GUILD_ID manquant."};
+  try {
+    const response=await fetch(`${DISCORD_API}/users/@me/guilds/${encodeURIComponent(config.guild_id)}/member`,{
       headers:{Authorization:`Bearer ${accessToken}`}
     });
-    if (response.status === 404) return "free";
-    if (!response.ok) {
-      console.warn("Discord member sync failed:", response.status, await response.text().catch(() => ""));
-      return null;
-    }
-    const member = await response.json();
-    const roles = new Set(Array.isArray(member.roles) ? member.roles.map(String) : []);
-    if (vipRoleId && roles.has(vipRoleId)) return "vip";
-    if (boostRoleId && roles.has(boostRoleId)) return "boost";
-    return "free";
-  } catch (error) {
-    console.warn("Discord member sync error:", error);
-    return null;
+    if (response.status===404) return {ok:true,source:"oauth",status:404,member:null,roles:[]};
+    const text=await response.text();
+    if (!response.ok) return {ok:false,source:"oauth",status:response.status,error:text.slice(0,500)};
+    const member=JSON.parse(text);
+    return {ok:true,source:"oauth",status:response.status,member,roles:Array.isArray(member.roles)?member.roles.map(String):[]};
+  } catch(error) {
+    return {ok:false,source:"oauth",status:0,error:String(error?.message || error)};
   }
+}
+
+async function saveDiscordRoleSync(userId, result, rank, env) {
+  const config=discordRoleConfiguration(env);
+  const roles=new Set(Array.isArray(result?.roles)?result.roles.map(String):[]);
+  const now=Date.now();
+  await env.DB.prepare(`INSERT INTO discord_role_sync(user_id,last_rank,source,success,status_code,has_boost_role,has_vip_role,role_count,error,synced_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(user_id) DO UPDATE SET last_rank=excluded.last_rank,source=excluded.source,success=excluded.success,status_code=excluded.status_code,
+    has_boost_role=excluded.has_boost_role,has_vip_role=excluded.has_vip_role,role_count=excluded.role_count,error=excluded.error,synced_at=excluded.synced_at`).bind(
+      userId,rank,String(result?.source||"none"),result?.ok?1:0,Number(result?.status||0),
+      config.boost_role_id&&roles.has(config.boost_role_id)?1:0,config.vip_role_id&&roles.has(config.vip_role_id)?1:0,
+      roles.size,String(result?.error||"").slice(0,500),now
+    ).run();
+  return now;
+}
+
+async function synchronizeDiscordRank(user, env, {accessToken=null,force=false}={}) {
+  if (adminIds(env).has(String(user.discord_id))) {
+    return {ok:true,rank:"admin",source:"admin",cached:false,message:"Compte administrateur."};
+  }
+  const config=discordRoleConfiguration(env);
+  if (!config.guild_id || (!config.boost_role_id && !config.vip_role_id)) {
+    return {ok:false,rank:await loadUserRank(user,env),source:"config",cached:false,message:"IDs du serveur ou des rôles Discord manquants."};
+  }
+  const last=await env.DB.prepare("SELECT * FROM discord_role_sync WHERE user_id=?").bind(user.id).first();
+  if (!force && last && Date.now()-Number(last.synced_at||0)<5*60*1000) {
+    const cachedRank=normalizeRank(last.last_rank || await loadUserRank(user,env));
+    user.account_rank=cachedRank;
+    return {ok:!!last.success,rank:cachedRank,source:last.source||"cache",cached:true,synced_at:Number(last.synced_at||0),has_boost_role:!!last.has_boost_role,has_vip_role:!!last.has_vip_role,status_code:Number(last.status_code||0),message:last.error||"Synchronisation récente."};
+  }
+
+  const attempts=[];
+  if (config.bot_token) attempts.push(await readDiscordMemberByBot(user.discord_id,env));
+  if ((!attempts.length || !attempts[attempts.length-1].ok) && accessToken) attempts.push(await readDiscordMemberByOAuth(accessToken,env));
+  const success=attempts.find(x=>x.ok);
+  if (!success) {
+    const failure=attempts[attempts.length-1] || {ok:false,source:"config",status:0,error:"DISCORD_BOT_TOKEN manquant. Relance CONFIGURER_BOT_DISCORD.bat."};
+    const currentRank=await loadUserRank(user,env);
+    const syncedAt=await saveDiscordRoleSync(user.id,failure,currentRank,env);
+    user.account_rank=currentRank;
+    return {ok:false,rank:currentRank,source:failure.source,cached:false,synced_at:syncedAt,status_code:Number(failure.status||0),message:failure.error||"Impossible de lire les rôles Discord."};
+  }
+
+  const rank=discordRankFromRoleIds(success.roles,env);
+  const now=Date.now();
+  await env.DB.prepare(`INSERT INTO user_ranks(user_id,rank,updated_at) VALUES(?,?,?)
+    ON CONFLICT(user_id) DO UPDATE SET rank=excluded.rank,updated_at=excluded.updated_at`).bind(user.id,rank,now).run();
+  const syncedAt=await saveDiscordRoleSync(user.id,success,rank,env);
+  user.account_rank=rank;
+  const roles=new Set(success.roles||[]);
+  return {ok:true,rank,source:success.source,cached:false,synced_at:syncedAt,status_code:Number(success.status||0),has_boost_role:!!(config.boost_role_id&&roles.has(config.boost_role_id)),has_vip_role:!!(config.vip_role_id&&roles.has(config.vip_role_id)),role_count:roles.size,message:rank==="vip"?"Rôle VIP détecté.":rank==="boost"?"Rôle Boost détecté.":"Aucun rôle premium détecté."};
 }
 
 async function discordCallback(request, env) {
@@ -296,13 +384,8 @@ async function discordCallback(request, env) {
     ON CONFLICT(discord_id) DO UPDATE SET username=excluded.username,global_name=excluded.global_name,avatar=excluded.avatar,updated_at=excluded.updated_at`)
     .bind(discord.id, discord.username, discord.global_name || null, discord.avatar || null, startingPoints, startingPoints, now, now).run();
   const user = await env.DB.prepare("SELECT * FROM users WHERE discord_id=?").bind(discord.id).first();
-  const syncedRank = await discordRankFromRoles(token.access_token, env);
-  if (syncedRank) {
-    await env.DB.prepare(`INSERT INTO user_ranks(user_id,rank,updated_at) VALUES(?,?,?)
-      ON CONFLICT(user_id) DO UPDATE SET rank=excluded.rank,updated_at=excluded.updated_at`).bind(user.id,syncedRank,now).run();
-  } else {
-    await env.DB.prepare("INSERT OR IGNORE INTO user_ranks(user_id,rank,updated_at) VALUES(?,'free',?)").bind(user.id,now).run();
-  }
+  await env.DB.prepare("INSERT OR IGNORE INTO user_ranks(user_id,rank,updated_at) VALUES(?,'free',?)").bind(user.id,now).run();
+  await synchronizeDiscordRank(user,env,{accessToken:token.access_token,force:true});
   const rawCode = randomToken(32);
   await env.DB.prepare("INSERT INTO login_codes(code_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)").bind(await sha256(rawCode), user.id, now + LOGIN_CODE_TTL_MS, now).run();
   return redirect(`${env.FRONTEND_ORIGIN}/#auth_code=${encodeURIComponent(rawCode)}`, clearCookie);
@@ -1624,6 +1707,8 @@ async function handleAdmin(request, user, env, path) {
   if (match && request.method === "DELETE") return deleteWheelReward(request, env, match[1]);
   match = path.match(/^\/api\/admin\/users\/([^/]+)\/rank$/);
   if (match && (request.method === "PUT" || request.method === "POST")) return setUserRank(request, env, decodeURIComponent(match[1]));
+  match = path.match(/^\/api\/admin\/users\/([^/]+)\/sync-discord-rank$/);
+  if (match && request.method === "POST") return syncAdminUserDiscordRank(request, env, decodeURIComponent(match[1]));
   match = path.match(/^\/api\/admin\/users\/([^/]+)\/points$/);
   if (match && request.method === "POST") return adjustPoints(request, env, match[1]);
   match = path.match(/^\/api\/admin\/users\/([^/]+)\/timer$/);
@@ -1690,22 +1775,24 @@ async function adminOverview(request, env) {
   const itemCatalog = await env.DB.prepare("SELECT item_key,name,emoji,item_type,rarity FROM item_catalog ORDER BY item_type,rarity,name").all();
   const dayKey = brusselsDayKey();
   const users = await env.DB.prepare(`SELECT u.discord_id,u.username,u.global_name AS display_name,u.points,u.total_earned,u.total_spent,
-    COALESCE(ur.rank,'free') AS stored_rank,
+    COALESCE(ur.rank,'free') AS stored_rank,drs.source AS discord_sync_source,drs.success AS discord_sync_success,
+    drs.has_boost_role,drs.has_vip_role,drs.role_count,drs.error AS discord_sync_error,drs.synced_at AS discord_synced_at,
     COALESCE((SELECT dgu.used FROM daily_generation_usage dgu WHERE dgu.user_id=u.id AND dgu.day_key=?),0) AS generations_today,
     (SELECT COUNT(*) FROM deliveries d WHERE d.user_id=u.id) AS generations,
     (SELECT COUNT(*) FROM purchases p WHERE p.user_id=u.id) AS purchases
-    FROM users u LEFT JOIN user_ranks ur ON ur.user_id=u.id
+    FROM users u LEFT JOIN user_ranks ur ON ur.user_id=u.id LEFT JOIN discord_role_sync drs ON drs.user_id=u.id
     ORDER BY u.created_at DESC LIMIT 200`).bind(dayKey).all();
   const settingsRows = await env.DB.prepare("SELECT key,value FROM app_settings").all();
   const history = await getAdminHistoryData(env);
   const timers = await getAdminTimersData(env);
   const settings = Object.fromEntries(settingsRows.results.map(x => [x.key,x.value]));
   return json({
-    api_version:"progression-v7.7",
+    api_version:"progression-v7.8",
     discord_integration:{
       guild_configured:!!String(env.DISCORD_GUILD_ID || "").trim(),
       boost_role_configured:!!String(env.DISCORD_BOOST_ROLE_ID || "").trim(),
       vip_role_configured:!!String(env.DISCORD_VIP_ROLE_ID || "").trim(),
+      bot_token_configured:!!String(env.DISCORD_BOT_TOKEN || "").trim(),
       restock_webhook_configured:!!String(env.DISCORD_RESTOCK_WEBHOOK_URL || "").trim(),
       client_role_configured:!!String(env.DISCORD_CLIENT_ROLE_ID || "").trim()
     },
@@ -1719,7 +1806,7 @@ async function adminOverview(request, env) {
     users:users.results.map(x=>{
       const accountRank=adminIds(env).has(x.discord_id)?"admin":normalizeRank(x.stored_rank);
       const rules=RANK_RULES[accountRank];
-      return {...x,account_rank:accountRank,rank:rules,points:Number(x.points),total_earned:Number(x.total_earned),total_spent:Number(x.total_spent),generations:Number(x.generations),purchases:Number(x.purchases),generation_cooldown_seconds:rules.generation_cooldown_seconds,daily_generation_limit:rules.daily_generation_limit,generations_today:Number(x.generations_today || 0)};
+      return {...x,account_rank:accountRank,rank:rules,points:Number(x.points),total_earned:Number(x.total_earned),total_spent:Number(x.total_spent),generations:Number(x.generations),purchases:Number(x.purchases),generation_cooldown_seconds:rules.generation_cooldown_seconds,daily_generation_limit:rules.daily_generation_limit,generations_today:Number(x.generations_today || 0),discord_sync_success:!!x.discord_sync_success,has_boost_role:!!x.has_boost_role,has_vip_role:!!x.has_vip_role,role_count:Number(x.role_count||0),discord_synced_at:Number(x.discord_synced_at||0)};
     }),
     settings,history,timers,daily_usage_day:dayKey,daily_usage_timezone:"Europe/Brussels"
   },200,env,request);
@@ -1859,6 +1946,18 @@ async function setUserRank(request, env, discordId) {
     env.DB.prepare("DELETE FROM app_settings WHERE key IN (?,?)").bind(`user_generation_cooldown:${cleanId}`,`user_daily_generation_limit:${cleanId}`)
   ]);
   return json({ok:true,discord_id:cleanId,rank:RANK_RULES[rank]},200,env,request);
+}
+
+async function syncAdminUserDiscordRank(request,env,discordId) {
+  const cleanId=String(discordId||"").trim();
+  if (!/^\d{5,30}$/.test(cleanId)) throw httpError(400,"ID Discord invalide.");
+  const user=await env.DB.prepare("SELECT * FROM users WHERE discord_id=?").bind(cleanId).first();
+  if (!user) throw httpError(404,"Utilisateur introuvable.");
+  user.account_rank=await loadUserRank(user,env);
+  const discord_sync=await synchronizeDiscordRank(user,env,{force:true});
+  user.account_rank=await loadUserRank(user,env);
+  if (!discord_sync.ok) throw httpError(409,discord_sync.message,{discord_sync,user:publicUser(user,env)});
+  return json({ok:true,user:publicUser(user,env),discord_sync},200,env,request);
 }
 
 async function adjustPoints(request,env,discordId){const {delta}=await parseJson(request),amount=Math.trunc(Number(delta));if(!Number.isFinite(amount)||Math.abs(amount)>1000000)throw httpError(400,"Ajustement invalide.");const row=await env.DB.prepare("UPDATE users SET points=MAX(0,points+?),total_earned=total_earned+CASE WHEN ?>0 THEN ? ELSE 0 END,total_spent=total_spent+CASE WHEN ?<0 THEN ABS(?) ELSE 0 END,updated_at=? WHERE discord_id=? RETURNING points").bind(amount,amount,amount,amount,amount,Date.now(),discordId).first();if(!row)throw httpError(404,"Utilisateur introuvable.");return json({ok:true,points:Number(row.points)},200,env,request)}
