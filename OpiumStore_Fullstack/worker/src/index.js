@@ -26,7 +26,7 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
-      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"progression-v7.8"}, 200, env, request);
+      if (path === "/health" && request.method === "GET") return json({ok:true, service:"opiumstore-api", version:"progression-v7.9"}, 200, env, request);
       if (path === "/auth/discord/start" && request.method === "GET") return await startDiscordAuth(env);
       if (path === "/auth/discord/callback" && request.method === "GET") return await discordCallback(request, env);
       if (path === "/auth/exchange" && request.method === "POST") return await exchangeLoginCode(request, env);
@@ -220,6 +220,12 @@ async function loadUserRank(user, env) {
   return normalizeRank(row?.rank || "free");
 }
 
+async function loadUserRankMode(user, env) {
+  if (adminIds(env).has(String(user?.discord_id || ""))) return "manual";
+  const row = await env.DB.prepare("SELECT mode FROM user_rank_preferences WHERE user_id=?").bind(user.id).first();
+  return row?.mode === "manual" ? "manual" : "discord";
+}
+
 function publicRank(user, env) {
   const rules = rankRules(user, env);
   return {
@@ -243,7 +249,8 @@ function publicUser(user, env) {
     total_spent:Number(user.total_spent),
     rank,
     account_rank:rank.key,
-    is_admin:rank.key === "admin"
+    is_admin:rank.key === "admin",
+    rank_mode:user.rank_mode === "manual" ? "manual" : "discord"
   };
 }
 
@@ -322,18 +329,28 @@ async function saveDiscordRoleSync(userId, result, rank, env) {
 }
 
 async function synchronizeDiscordRank(user, env, {accessToken=null,force=false}={}) {
+  const currentRank=await loadUserRank(user,env);
+  const rankMode=await loadUserRankMode(user,env);
+  user.rank_mode=rankMode;
+
   if (adminIds(env).has(String(user.discord_id))) {
-    return {ok:true,rank:"admin",source:"admin",cached:false,message:"Compte administrateur."};
+    user.account_rank="admin";
+    return {ok:true,rank:"admin",detected_rank:"admin",protected:true,rank_mode:"manual",source:"admin-config",cached:false,message:"Compte administrateur protégé par ADMIN_DISCORD_IDS."};
   }
+
   const config=discordRoleConfiguration(env);
   if (!config.guild_id || (!config.boost_role_id && !config.vip_role_id)) {
-    return {ok:false,rank:await loadUserRank(user,env),source:"config",cached:false,message:"IDs du serveur ou des rôles Discord manquants."};
+    user.account_rank=currentRank;
+    return {ok:false,rank:currentRank,detected_rank:null,protected:rankMode==="manual",rank_mode:rankMode,source:"config",cached:false,message:"IDs du serveur ou des rôles Discord manquants. Le rang actuel a été conservé."};
   }
+
   const last=await env.DB.prepare("SELECT * FROM discord_role_sync WHERE user_id=?").bind(user.id).first();
   if (!force && last && Date.now()-Number(last.synced_at||0)<5*60*1000) {
-    const cachedRank=normalizeRank(last.last_rank || await loadUserRank(user,env));
-    user.account_rank=cachedRank;
-    return {ok:!!last.success,rank:cachedRank,source:last.source||"cache",cached:true,synced_at:Number(last.synced_at||0),has_boost_role:!!last.has_boost_role,has_vip_role:!!last.has_vip_role,status_code:Number(last.status_code||0),message:last.error||"Synchronisation récente."};
+    const detectedRank=normalizeRank(last.last_rank || "free");
+    const effective=rankMode==="manual"?currentRank:detectedRank;
+    user.account_rank=effective;
+    const protectedMessage=rankMode==="manual"?`Rang manuel ${RANK_RULES[currentRank].label} protégé. Discord détecte ${RANK_RULES[detectedRank].label}.`:(last.error||"Synchronisation récente.");
+    return {ok:!!last.success,rank:effective,detected_rank:detectedRank,protected:rankMode==="manual",rank_mode:rankMode,source:rankMode==="manual"?"manual":(last.source||"cache"),discord_source:last.source||"cache",cached:true,synced_at:Number(last.synced_at||0),has_boost_role:!!last.has_boost_role,has_vip_role:!!last.has_vip_role,status_code:Number(last.status_code||0),message:protectedMessage};
   }
 
   const attempts=[];
@@ -342,20 +359,24 @@ async function synchronizeDiscordRank(user, env, {accessToken=null,force=false}=
   const success=attempts.find(x=>x.ok);
   if (!success) {
     const failure=attempts[attempts.length-1] || {ok:false,source:"config",status:0,error:"DISCORD_BOT_TOKEN manquant. Relance CONFIGURER_BOT_DISCORD.bat."};
-    const currentRank=await loadUserRank(user,env);
     const syncedAt=await saveDiscordRoleSync(user.id,failure,currentRank,env);
     user.account_rank=currentRank;
-    return {ok:false,rank:currentRank,source:failure.source,cached:false,synced_at:syncedAt,status_code:Number(failure.status||0),message:failure.error||"Impossible de lire les rôles Discord."};
+    return {ok:false,rank:currentRank,detected_rank:null,protected:rankMode==="manual",rank_mode:rankMode,source:failure.source,cached:false,synced_at:syncedAt,status_code:Number(failure.status||0),message:`${failure.error||"Impossible de lire les rôles Discord."} Le rang ${RANK_RULES[currentRank].label} a été conservé.`};
   }
 
-  const rank=discordRankFromRoleIds(success.roles,env);
+  const detectedRank=discordRankFromRoleIds(success.roles,env);
   const now=Date.now();
-  await env.DB.prepare(`INSERT INTO user_ranks(user_id,rank,updated_at) VALUES(?,?,?)
-    ON CONFLICT(user_id) DO UPDATE SET rank=excluded.rank,updated_at=excluded.updated_at`).bind(user.id,rank,now).run();
-  const syncedAt=await saveDiscordRoleSync(user.id,success,rank,env);
-  user.account_rank=rank;
+  if (rankMode==="discord") {
+    await env.DB.prepare(`INSERT INTO user_ranks(user_id,rank,updated_at) VALUES(?,?,?)
+      ON CONFLICT(user_id) DO UPDATE SET rank=excluded.rank,updated_at=excluded.updated_at`).bind(user.id,detectedRank,now).run();
+  }
+  const syncedAt=await saveDiscordRoleSync(user.id,success,detectedRank,env);
+  const effective=rankMode==="manual"?currentRank:detectedRank;
+  user.account_rank=effective;
   const roles=new Set(success.roles||[]);
-  return {ok:true,rank,source:success.source,cached:false,synced_at:syncedAt,status_code:Number(success.status||0),has_boost_role:!!(config.boost_role_id&&roles.has(config.boost_role_id)),has_vip_role:!!(config.vip_role_id&&roles.has(config.vip_role_id)),role_count:roles.size,message:rank==="vip"?"Rôle VIP détecté.":rank==="boost"?"Rôle Boost détecté.":"Aucun rôle premium détecté."};
+  const detectedMessage=detectedRank==="vip"?"Rôle VIP détecté.":detectedRank==="boost"?"Rôle Boost détecté.":"Aucun rôle premium détecté.";
+  const message=rankMode==="manual"?`Rang manuel ${RANK_RULES[currentRank].label} protégé. ${detectedMessage}`:detectedMessage;
+  return {ok:true,rank:effective,detected_rank:detectedRank,protected:rankMode==="manual",rank_mode:rankMode,source:rankMode==="manual"?"manual":success.source,discord_source:success.source,cached:false,synced_at:syncedAt,status_code:Number(success.status||0),has_boost_role:!!(config.boost_role_id&&roles.has(config.boost_role_id)),has_vip_role:!!(config.vip_role_id&&roles.has(config.vip_role_id)),role_count:roles.size,message};
 }
 
 async function discordCallback(request, env) {
@@ -384,7 +405,10 @@ async function discordCallback(request, env) {
     ON CONFLICT(discord_id) DO UPDATE SET username=excluded.username,global_name=excluded.global_name,avatar=excluded.avatar,updated_at=excluded.updated_at`)
     .bind(discord.id, discord.username, discord.global_name || null, discord.avatar || null, startingPoints, startingPoints, now, now).run();
   const user = await env.DB.prepare("SELECT * FROM users WHERE discord_id=?").bind(discord.id).first();
-  await env.DB.prepare("INSERT OR IGNORE INTO user_ranks(user_id,rank,updated_at) VALUES(?,'free',?)").bind(user.id,now).run();
+  await env.DB.batch([
+    env.DB.prepare("INSERT OR IGNORE INTO user_ranks(user_id,rank,updated_at) VALUES(?,'free',?)").bind(user.id,now),
+    env.DB.prepare("INSERT OR IGNORE INTO user_rank_preferences(user_id,mode,updated_at) VALUES(?,'discord',?)").bind(user.id,now)
+  ]);
   await synchronizeDiscordRank(user,env,{accessToken:token.access_token,force:true});
   const rawCode = randomToken(32);
   await env.DB.prepare("INSERT INTO login_codes(code_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)").bind(await sha256(rawCode), user.id, now + LOGIN_CODE_TTL_MS, now).run();
@@ -412,6 +436,7 @@ async function requireUser(request, env) {
   const row = await env.DB.prepare(`SELECT u.*,s.id AS session_id FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?`).bind(await sha256(token), Date.now()).first();
   if (!row) throw httpError(401, "Session invalide ou expirée.");
   row.account_rank = await loadUserRank(row, env);
+  row.rank_mode = await loadUserRankMode(row, env);
   return row;
 }
 
@@ -1709,6 +1734,8 @@ async function handleAdmin(request, user, env, path) {
   if (match && (request.method === "PUT" || request.method === "POST")) return setUserRank(request, env, decodeURIComponent(match[1]));
   match = path.match(/^\/api\/admin\/users\/([^/]+)\/sync-discord-rank$/);
   if (match && request.method === "POST") return syncAdminUserDiscordRank(request, env, decodeURIComponent(match[1]));
+  match = path.match(/^\/api\/admin\/users\/([^/]+)\/rank-discord-auto$/);
+  if (match && (request.method === "PUT" || request.method === "POST")) return enableDiscordRankSync(request, env, decodeURIComponent(match[1]));
   match = path.match(/^\/api\/admin\/users\/([^/]+)\/points$/);
   if (match && request.method === "POST") return adjustPoints(request, env, match[1]);
   match = path.match(/^\/api\/admin\/users\/([^/]+)\/timer$/);
@@ -1775,19 +1802,19 @@ async function adminOverview(request, env) {
   const itemCatalog = await env.DB.prepare("SELECT item_key,name,emoji,item_type,rarity FROM item_catalog ORDER BY item_type,rarity,name").all();
   const dayKey = brusselsDayKey();
   const users = await env.DB.prepare(`SELECT u.discord_id,u.username,u.global_name AS display_name,u.points,u.total_earned,u.total_spent,
-    COALESCE(ur.rank,'free') AS stored_rank,drs.source AS discord_sync_source,drs.success AS discord_sync_success,
+    COALESCE(ur.rank,'free') AS stored_rank,COALESCE(urp.mode,'discord') AS rank_mode,drs.last_rank AS discord_detected_rank,drs.source AS discord_sync_source,drs.success AS discord_sync_success,
     drs.has_boost_role,drs.has_vip_role,drs.role_count,drs.error AS discord_sync_error,drs.synced_at AS discord_synced_at,
     COALESCE((SELECT dgu.used FROM daily_generation_usage dgu WHERE dgu.user_id=u.id AND dgu.day_key=?),0) AS generations_today,
     (SELECT COUNT(*) FROM deliveries d WHERE d.user_id=u.id) AS generations,
     (SELECT COUNT(*) FROM purchases p WHERE p.user_id=u.id) AS purchases
-    FROM users u LEFT JOIN user_ranks ur ON ur.user_id=u.id LEFT JOIN discord_role_sync drs ON drs.user_id=u.id
+    FROM users u LEFT JOIN user_ranks ur ON ur.user_id=u.id LEFT JOIN user_rank_preferences urp ON urp.user_id=u.id LEFT JOIN discord_role_sync drs ON drs.user_id=u.id
     ORDER BY u.created_at DESC LIMIT 200`).bind(dayKey).all();
   const settingsRows = await env.DB.prepare("SELECT key,value FROM app_settings").all();
   const history = await getAdminHistoryData(env);
   const timers = await getAdminTimersData(env);
   const settings = Object.fromEntries(settingsRows.results.map(x => [x.key,x.value]));
   return json({
-    api_version:"progression-v7.8",
+    api_version:"progression-v7.9",
     discord_integration:{
       guild_configured:!!String(env.DISCORD_GUILD_ID || "").trim(),
       boost_role_configured:!!String(env.DISCORD_BOOST_ROLE_ID || "").trim(),
@@ -1806,7 +1833,7 @@ async function adminOverview(request, env) {
     users:users.results.map(x=>{
       const accountRank=adminIds(env).has(x.discord_id)?"admin":normalizeRank(x.stored_rank);
       const rules=RANK_RULES[accountRank];
-      return {...x,account_rank:accountRank,rank:rules,points:Number(x.points),total_earned:Number(x.total_earned),total_spent:Number(x.total_spent),generations:Number(x.generations),purchases:Number(x.purchases),generation_cooldown_seconds:rules.generation_cooldown_seconds,daily_generation_limit:rules.daily_generation_limit,generations_today:Number(x.generations_today || 0),discord_sync_success:!!x.discord_sync_success,has_boost_role:!!x.has_boost_role,has_vip_role:!!x.has_vip_role,role_count:Number(x.role_count||0),discord_synced_at:Number(x.discord_synced_at||0)};
+      return {...x,account_rank:accountRank,rank:rules,rank_mode:x.rank_mode==="manual"?"manual":"discord",discord_detected_rank:normalizeRank(x.discord_detected_rank||"free"),points:Number(x.points),total_earned:Number(x.total_earned),total_spent:Number(x.total_spent),generations:Number(x.generations),purchases:Number(x.purchases),generation_cooldown_seconds:rules.generation_cooldown_seconds,daily_generation_limit:rules.daily_generation_limit,generations_today:Number(x.generations_today || 0),discord_sync_success:!!x.discord_sync_success,has_boost_role:!!x.has_boost_role,has_vip_role:!!x.has_vip_role,role_count:Number(x.role_count||0),discord_synced_at:Number(x.discord_synced_at||0)};
     }),
     settings,history,timers,daily_usage_day:dayKey,daily_usage_timezone:"Europe/Brussels"
   },200,env,request);
@@ -1940,12 +1967,31 @@ async function setUserRank(request, env, discordId) {
   const now=Date.now();
   await env.DB.batch([
     env.DB.prepare(`INSERT INTO user_ranks(user_id,rank,updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET rank=excluded.rank,updated_at=excluded.updated_at`).bind(user.id,rank,now),
+    env.DB.prepare(`INSERT INTO user_rank_preferences(user_id,mode,updated_at) VALUES(?,'manual',?) ON CONFLICT(user_id) DO UPDATE SET mode='manual',updated_at=excluded.updated_at`).bind(user.id,now),
     env.DB.prepare("DELETE FROM generator_cooldowns WHERE user_id=?").bind(user.id),
     env.DB.prepare("DELETE FROM wheel_cooldowns WHERE user_id=?").bind(user.id),
     env.DB.prepare("DELETE FROM wheel_cycle_usage WHERE user_id=?").bind(user.id),
     env.DB.prepare("DELETE FROM app_settings WHERE key IN (?,?)").bind(`user_generation_cooldown:${cleanId}`,`user_daily_generation_limit:${cleanId}`)
   ]);
-  return json({ok:true,discord_id:cleanId,rank:RANK_RULES[rank]},200,env,request);
+  return json({ok:true,discord_id:cleanId,rank:RANK_RULES[rank],rank_mode:"manual"},200,env,request);
+}
+
+async function enableDiscordRankSync(request,env,discordId) {
+  const cleanId=String(discordId||"").trim();
+  if (!/^\d{5,30}$/.test(cleanId)) throw httpError(400,"ID Discord invalide.");
+  const user=await env.DB.prepare("SELECT * FROM users WHERE discord_id=?").bind(cleanId).first();
+  if (!user) throw httpError(404,"Utilisateur introuvable.");
+  const now=Date.now();
+  await env.DB.prepare(`INSERT INTO user_rank_preferences(user_id,mode,updated_at) VALUES(?,'discord',?)
+    ON CONFLICT(user_id) DO UPDATE SET mode='discord',updated_at=excluded.updated_at`).bind(user.id,now).run();
+  user.rank_mode="discord";
+  user.account_rank=await loadUserRank(user,env);
+  user.rank_mode=await loadUserRankMode(user,env);
+  const discord_sync=await synchronizeDiscordRank(user,env,{force:true});
+  user.account_rank=await loadUserRank(user,env);
+  user.rank_mode=await loadUserRankMode(user,env);
+  if (!discord_sync.ok) return json({ok:true,warning:true,user:publicUser(user,env),discord_sync},200,env,request);
+  return json({ok:true,user:publicUser(user,env),discord_sync},200,env,request);
 }
 
 async function syncAdminUserDiscordRank(request,env,discordId) {
@@ -1956,6 +2002,7 @@ async function syncAdminUserDiscordRank(request,env,discordId) {
   user.account_rank=await loadUserRank(user,env);
   const discord_sync=await synchronizeDiscordRank(user,env,{force:true});
   user.account_rank=await loadUserRank(user,env);
+  user.rank_mode=await loadUserRankMode(user,env);
   if (!discord_sync.ok) throw httpError(409,discord_sync.message,{discord_sync,user:publicUser(user,env)});
   return json({ok:true,user:publicUser(user,env),discord_sync},200,env,request);
 }
