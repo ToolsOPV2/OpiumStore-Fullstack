@@ -3,6 +3,7 @@ main = "src/index.js"
 compatibility_date = "2026-07-12"
 
 [vars]
+DISCORD_ADMIN_ROLE_ID = "1518913320831160431"
 VAPID_SUBJECT = "mailto:opiumstoregen@gmail.com"
 VAPID_PUBLIC_KEY = "BLZpn6bV4Tb7-4U8_u6IV4_VUx6t7tG2vOUSFTpSmL6-uxjZUVv3Ac6rqthN4ID_o3YNaWraK30hfcEhWHpfRqQ"
 DISCORD_CLIENT_ROLE_ID = "1518913330914529380"
